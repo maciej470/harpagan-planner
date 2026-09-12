@@ -9,7 +9,7 @@ npm install
 npm run dev
 ```
 
-Testy: `npm test`, build produkcyjny: `npm run build`.
+Testy: `npm test` (5 plików, 6 przypadków), build produkcyjny: `npm run build`.
 
 Projekt zapisuje się automatycznie w IndexedDB. Routing korzysta z publicznego Valhalla; przy niedostępności pokazuje bezpieczny fallback geometryczny. Dane map i zdjęcia nie są wysyłane do aplikacji; do usług trasowania trafiają wyłącznie współrzędne.
 
