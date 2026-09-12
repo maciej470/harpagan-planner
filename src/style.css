@@ -17,3 +17,4 @@ img.photo-interactive{image-orientation:from-image}
 .hero input[type=text]{display:block;width:100%;max-width:620px;margin-top:5px;padding:12px;border:1px solid #bcccdc;border-radius:10px;font-size:16px}button:disabled{opacity:.45;cursor:not-allowed}
 .leaflet-bottom.leaflet-right{bottom:68px}
 .photo-checkpoint{position:absolute;z-index:650;transform:translate(-50%,-50%);width:36px;height:36px;border:3px solid #fff;border-radius:50%;background:#e85d04;color:#fff;font-weight:800;font-size:15px;box-shadow:0 2px 8px #0008;touch-action:manipulation}
+.base-options{margin:12px 0;padding:12px;border-radius:12px;background:#f0f9ff}.base-options label{display:inline-flex;align-items:center;gap:7px;margin:10px 16px 0 0;min-height:32px}.base-options input{width:22px;height:22px;accent-color:#0077b6}.dark .base-options{background:#102f3c}

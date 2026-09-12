@@ -6,7 +6,7 @@ import { saveProject, listProjects } from './storage';
 import { homography, imageToGeo } from './math';
 import { calculateRoute } from './services';
 import { gpxFor } from './gpx';
-import { mapyRouteUrl } from './mapy';
+import { mapyRouteUrlForOrder } from './mapy';
 
 type Step = 'map' | 'points' | 'route';
 type Calibration = 'idle' | 'photo' | 'osm' | 'done';
@@ -15,7 +15,7 @@ const el = <T extends HTMLElement = HTMLElement>(selector: string) => document.q
 const id = () => crypto.randomUUID();
 const newProject = (): Project => ({
   id: id(), name: 'Nowa pętla', createdAt: Date.now(), updatedAt: Date.now(),
-  controlPoints: [], checkpoints: [], opacity: 0.55,
+  controlPoints: [], checkpoints: [], opacity: 0.55, includeBaseStart: true, includeBaseEnd: true,
   imageTransform: { x: 0, y: 0, scale: 1, rotation: 0 }
 });
 let project = newProject();
@@ -64,9 +64,6 @@ function createApp() {
   L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
     attribution: '© OpenStreetMap contributors', maxZoom: 19
   }).addTo(map);
-  map.on('click', e => {
-    if (step === 'points' && calibration === 'done' && !photoMode) addCheckpoint({ lat: e.latlng.lat, lon: e.latlng.lng });
-  });
   const saved = localStorage.getItem('harpagan-theme');
   if (saved === 'dark') document.body.classList.add('dark');
   el('#theme').onclick = () => {
@@ -166,7 +163,7 @@ function renderLayers() {
   layer.style.pointerEvents = photoInteractive ? 'auto' : 'none';
   el('#map').style.visibility = photoVisible ? 'hidden' : 'visible';
   const reticle = el('#reticle');
-  reticle.hidden = !photoStage && !osmStage && !(step === 'points' && photoMode);
+  reticle.hidden = !photoStage && !osmStage && step !== 'points';
   const mapInput = !photoVisible && !photoStage;
   map.dragging[mapInput ? 'enable' : 'disable']();
   map.touchZoom[mapInput ? 'enable' : 'disable']();
@@ -181,8 +178,8 @@ function renderLayers() {
       : osmStage
         ? 'Przesuń i powiększ OSM. Ustaw to samo miejsce pod celownikiem.'
         : step === 'points' && photoMode
-          ? 'Dotknij punktu na zdjęciu, aby dodać PK.'
-          : step === 'points' ? 'Dotknij mapy, aby dodać PK.' : '';
+          ? 'Ustaw miejsce na zdjęciu pod celownikiem i użyj przycisku na dole.'
+          : step === 'points' ? 'Przesuń OSM pod celownikiem, aby dodać PK lub bazę.' : '';
   help.hidden = !help.textContent;
   if (mapInput) setTimeout(() => map.invalidateSize(), 0);
 }
@@ -195,6 +192,17 @@ function renderMapActions() {
     b.className = secondary ? 'secondary' : 'primary';
     b.textContent = label; b.onclick = action; area.append(b); return b;
   };
+  if (step === 'points' && !photoMode) {
+    button(project.image ? 'Pokaż zdjęcie' : 'Brak zdjęcia', () => { if (project.image) { photoMode = true; refresh(); } }, true);
+    button('Ustaw bazę tutaj', () => {
+      const center = map.getCenter(); setBaseAt({ lat: center.lat, lon: center.lng });
+    }, true);
+    if (project.base) button('Usuń bazę', removeBase, true);
+    button('Dodaj PK tutaj', () => {
+      const center = map.getCenter(); addCheckpoint({ lat: center.lat, lon: center.lng });
+    });
+    return;
+  }
   if (!project.image) return;
   if (step === 'points' && photoMode) {
     button('Pokaż OSM', () => { photoMode = false; refresh(); }, true);
@@ -386,30 +394,44 @@ function addCheckpoint(geo: LatLng, image?: ImagePoint) {
   project.checkpoints.push({ id: id(), number, geo, image, kind: 'checkpoint' });
   project.route = undefined; refresh(); save();
 }
+function setBaseAt(geo: LatLng) {
+  project.base = geo;
+  project.includeBaseStart ??= true; project.includeBaseEnd ??= true;
+  project.checkpoints = project.checkpoints.filter(p => p.kind !== 'base');
+  project.checkpoints.unshift({ id: id(), number: '', geo, kind: 'base' });
+  project.route = undefined; refresh(); save();
+}
+function removeBase() {
+  project.base = undefined; project.includeBaseStart = false; project.includeBaseEnd = false;
+  project.checkpoints = project.checkpoints.filter(p => p.kind !== 'base');
+  project.route = undefined; refresh(); save();
+}
 function setBase() {
-  const use = (geo: LatLng) => {
-    project.base = geo;
-    project.checkpoints = project.checkpoints.filter(p => p.kind !== 'base');
-    project.checkpoints.unshift({ id: id(), number: '', geo, kind: 'base' });
-    refresh(); save();
-  };
-  if (!navigator.geolocation) { const p = map.getCenter(); use({ lat: p.lat, lon: p.lng }); return; }
+  if (!navigator.geolocation) { const p = map.getCenter(); setBaseAt({ lat: p.lat, lon: p.lng }); return; }
   navigator.geolocation.getCurrentPosition(
-    p => use({ lat: p.coords.latitude, lon: p.coords.longitude }),
-    () => { const p = map.getCenter(); use({ lat: p.lat, lon: p.lng }); alert('GPS niedostępny. Bazę ustawiono w środku mapy.'); },
+    p => setBaseAt({ lat: p.coords.latitude, lon: p.coords.longitude }),
+    () => { alert('GPS niedostępny. Ustaw bazę pod celownikiem na mapie OSM.'); },
     { enableHighAccuracy: true, timeout: 8000, maximumAge: 300000 }
   );
 }
 function renderPointControls() {
   const cps = project.checkpoints.filter(p => p.kind === 'checkpoint');
+  const hasBase = Boolean(project.base), baseStart = project.includeBaseStart !== false, baseEnd = project.includeBaseEnd !== false;
   el('#points-controls').innerHTML = `
     <div class="card"><h2>Punkty kontrolne</h2>
-      <p class="muted">Widok: ${photoMode ? 'zdjęcie' : 'OSM'}. Dotknij miejsca, aby dodać PK.</p>
+      <p class="muted">Widok: ${photoMode ? 'zdjęcie' : 'OSM'}. Ustaw miejsce pod celownikiem i użyj przycisku na mapie.</p>
       <div class="button-row"><button id="points-view" class="secondary">${photoMode ? 'Pokaż OSM' : 'Pokaż zdjęcie'}</button>
-      <button id="set-base" class="primary">Tu jest baza (GPS)</button></div>
+      <button id="set-base" class="secondary">Baza z GPS</button>${hasBase ? '<button id="remove-base" class="ghost">Usuń bazę</button>' : ''}</div>
+      <div class="base-options"><strong>${hasBase ? 'Baza jest ustawiona' : 'Baza nie jest ustawiona'}</strong>
+      <label><input id="base-start" type="checkbox" ${baseStart ? 'checked' : ''} ${hasBase ? '' : 'disabled'}> Baza jako początek</label>
+      <label><input id="base-end" type="checkbox" ${baseEnd ? 'checked' : ''} ${hasBase ? '' : 'disabled'}> Baza jako koniec</label></div>
       <div id="checkpoint-list"></div></div>`;
-  el<HTMLButtonElement>('#points-view').onclick = () => { photoMode = !photoMode; refresh(); };
+  el<HTMLButtonElement>('#points-view').disabled = !project.image;
+  el<HTMLButtonElement>('#points-view').onclick = () => { if (project.image) { photoMode = !photoMode; refresh(); } };
   el<HTMLButtonElement>('#set-base').onclick = setBase;
+  document.querySelector<HTMLButtonElement>('#remove-base')?.addEventListener('click', removeBase);
+  el<HTMLInputElement>('#base-start').onchange = e => { project.includeBaseStart = (e.target as HTMLInputElement).checked; project.route = undefined; save(); };
+  el<HTMLInputElement>('#base-end').onchange = e => { project.includeBaseEnd = (e.target as HTMLInputElement).checked; project.route = undefined; save(); };
   const list = el('#checkpoint-list');
   if (!cps.length) { list.innerHTML = '<p class="muted">Nie dodano jeszcze PK.</p>'; return; }
   cps.forEach(p => {
@@ -434,7 +456,7 @@ function renderPointControls() {
 function renderRouteControls() {
   el('#route-controls').innerHTML = `
     <div class="card"><h2>Planowanie trasy</h2>
-      <p class="muted">Baza → pierwszy PK → pozostałe → ostatni PK → baza</p>
+      <p class="muted">Początek i koniec zależą od ustawień bazy. Pierwszy i ostatni PK możesz wskazać ręcznie.</p>
       <div class="button-row"><button id="calculate" class="primary">Oblicz trasę</button>
       <button id="gpx" class="secondary">Pobierz GPX</button>
       <button id="mapy" class="secondary">Otwórz Mapy.com</button></div>
@@ -454,28 +476,26 @@ function renderRouteControls() {
   if (route.warning) { const warning = document.createElement('p'); warning.className = 'warning'; warning.textContent = route.warning; box.append(warning); }
 }
 async function calculate() {
-  if (!project.base) { alert('Ustaw bazę przed obliczeniem trasy.'); return; }
   const cps = project.checkpoints.filter(p => p.kind === 'checkpoint');
   if (!cps.length) { alert('Dodaj przynajmniej jeden PK.'); return; }
   const button = el<HTMLButtonElement>('#calculate');
   button.disabled = true; button.textContent = 'Obliczanie…';
   try {
-    project.route = await calculateRoute(project.base, cps, cps.find(p => p.id === firstId), cps.find(p => p.id === lastId));
+    project.route = await calculateRoute(project.base, cps, cps.find(p => p.id === firstId), cps.find(p => p.id === lastId), { includeBaseStart: project.includeBaseStart !== false, includeBaseEnd: project.includeBaseEnd !== false });
     refresh(); save();
   } catch { alert('Nie udało się obliczyć trasy. Spróbuj ponownie.'); button.disabled = false; button.textContent = 'Oblicz trasę'; }
 }
 function downloadGpx() {
-  if (!project.route || !project.base) { alert('Najpierw oblicz trasę.'); return; }
+  if (!project.route) { alert('Najpierw oblicz trasę.'); return; }
   const blob = new Blob([gpxFor(project, project.route.order, project.route.geometry)], { type: 'application/gpx+xml' });
   const url = URL.createObjectURL(blob), a = document.createElement('a');
   a.href = url; a.download = `${project.name.replace(/[^a-zA-Z0-9ąćęłńóśźż_-]+/gi, '-')}.gpx`;
   a.click(); setTimeout(() => URL.revokeObjectURL(url), 30000);
 }
 function openMapy() {
-  if (!project.route || !project.base) { alert('Najpierw oblicz trasę.'); return; }
-  const points = project.route.order.filter(p => p.kind === 'checkpoint');
-  if (points.length > 15) alert('Mapy.com ma limit punktów pośrednich. Otwarta zostanie pierwsza część trasy.');
-  window.open(mapyRouteUrl(project.base, points.slice(0, 15)), '_blank', 'noopener');
+  if (!project.route) { alert('Najpierw oblicz trasę.'); return; }
+  if (project.route.order.length > 17) alert('Mapy.com ma limit punktów pośrednich. Długa trasa może wymagać podziału.');
+  window.open(mapyRouteUrlForOrder(project.route.order), '_blank', 'noopener');
 }
 function drawMarkers() {
   markers.forEach(m => m.remove()); markers = [];
