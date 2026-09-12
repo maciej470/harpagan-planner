@@ -24,3 +24,4 @@ const photoToolsObserver=new MutationObserver(()=>{const layer=document.querySel
 photoToolsObserver.observe(document.body,{subtree:true,childList:true});
 if('serviceWorker' in navigator) navigator.serviceWorker.register(`${import.meta.env.BASE_URL}sw.js`).catch(()=>{});
 render();
+if(navigator.geolocation)setTimeout(()=>navigator.geolocation.getCurrentPosition(pos=>map?.setView([pos.coords.latitude,pos.coords.longitude],15),()=>{},{enableHighAccuracy:true,timeout:8000,maximumAge:300000}),0);
