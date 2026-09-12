@@ -52,8 +52,8 @@ function createApp() {
           <div id="map"></div><div id="photo-layer"><img id="photo-image" alt="Zdjęcie mapy"></div>
           <div id="reticle" aria-hidden="true"><span></span></div>
           <div id="map-help" role="status"></div>
-          <div id="map-actions"></div>
         </div>
+        <div id="map-actions" aria-label="Działania mapy"></div>
         <div class="controls"><div id="map-controls"></div><div id="points-controls" hidden></div><div id="route-controls" hidden></div></div>
       </section>
       <footer><small>© OpenStreetMap contributors · Trasy: Valhalla / OSRM / geometria awaryjna</small></footer>
