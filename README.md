@@ -15,6 +15,8 @@ Projekt zapisuje się automatycznie w IndexedDB. Routing korzysta z publicznego 
 
 Zdjęcie można dodać z aparatu albo wybrać istniejący plik z galerii. Po dodaniu wybierz „Przesuń / skaluj zdjęcie”, aby przeciągać warstwę jednym palcem lub skalować ją kółkiem myszy. Kalibrację rozpoczyna przycisk „Dodaj punkt kalibracyjny”: wskaż punkt na zdjęciu, a następnie odpowiadające mu miejsce na mapie cyfrowej; wykonaj to co najmniej cztery razy. Po kalibracji tryb „Punkty” pozwala dodawać PK ze zdjęcia.
 
+Przycisk bazy próbuje pobrać bieżącą lokalizację telefonu; przy braku zgody można pozostawić bazę ustawioną środkiem mapy. Po publikacji zmian GitHub Actions automatycznie aktualizuje GitHub Pages.
+
 ## GitHub Pages
 
 Workflow wdrażający aplikację znajduje się w `.github/workflows/deploy.yml`. W repozytorium GitHub wybierz Settings → Pages → GitHub Actions. Aplikacja używa bazowej ścieżki `/harpagan-planner/`.
