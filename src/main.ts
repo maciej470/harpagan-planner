@@ -17,5 +17,6 @@ function openMapy(){if(!project.route||!project.base)return;const pts=project.ro
 function downloadGpx(){if(!project.route||!project.base)return;const all=project.route.order;const blob=new Blob([gpxFor(project,all,project.route.geometry)],{type:'application/gpx+xml'});const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=`${project.name.replace(/\s+/g,'-')}.gpx`;a.click();URL.revokeObjectURL(a.href);}
 async function openProject(){const ps=await listProjects();if(!ps.length){alert('Brak zapisanych projektów.');return;}project=ps[0];render();}
 async function autosave(){project.updatedAt=Date.now();await saveProject(project);}
+document.addEventListener('change',e=>{const t=e.target as HTMLInputElement;if(t.name!=='first'&&t.name!=='last')return;const row=t.closest('.checkpoint');const id=(row?.querySelector('input[data-id]') as HTMLInputElement)?.dataset.id;if(id){if(t.name==='first')selectedFirst=id;else selectedLast=id;autosave();}});
 if('serviceWorker' in navigator) navigator.serviceWorker.register(`${import.meta.env.BASE_URL}sw.js`).catch(()=>{});
 render();
