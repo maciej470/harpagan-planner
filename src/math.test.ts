@@ -1,0 +1,2 @@
+import {describe,it,expect} from 'vitest'; import {homography,imageToGeo,geoDistance} from './math';
+describe('kalibracja',()=>{it('przelicza narożniki transformacji afinicznej',()=>{const h=homography([{image:{x:0,y:0},geo:{lat:0,lon:0}},{image:{x:10,y:0},geo:{lat:0,lon:10}},{image:{x:0,y:10},geo:{lat:10,lon:0}},{image:{x:10,y:10},geo:{lat:10,lon:10}}]);expect(imageToGeo({x:5,y:5},h).lat).toBeCloseTo(5);expect(imageToGeo({x:5,y:5},h).lon).toBeCloseTo(5);});it('liczy dystans',()=>expect(geoDistance({lat:0,lon:0},{lat:0,lon:1})).toBeGreaterThan(110000));});
