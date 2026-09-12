@@ -1,0 +1,2 @@
+import type { Checkpoint, LatLng } from './types';
+export function mapyRouteUrl(base:LatLng,points:Checkpoint[],navigate=false){const waypoints=points.filter(p=>p.kind==='checkpoint').map(p=>`${p.geo.lon},${p.geo.lat}`).join(';');const u=new URL('https://mapy.com/fnc/v1/route');u.searchParams.set('start',`${base.lon},${base.lat}`);u.searchParams.set('end',`${base.lon},${base.lat}`);u.searchParams.set('routeType','foot_hiking');if(waypoints)u.searchParams.set('waypoints',waypoints);if(navigate)u.searchParams.set('navigate','true');return u.toString();}
