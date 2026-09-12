@@ -221,8 +221,6 @@ function renderMapActions() {
     return;
   }
   if (calibration === 'photo') {
-    button('↶ 5°', () => rotate(-5), true);
-    button('↷ 5°', () => rotate(5), true);
     button('Zablokuj punkt na zdjęciu', () => {
       const point = imageAtScreenCenter();
       if (!point) { alert('Ustaw zdjęcie pod celownikiem.'); return; }
@@ -325,7 +323,7 @@ function photoPointerMove(e: PointerEvent) {
     const g = measureGesture();
     const scale = clamp(gestureStart.scale * g.distance / Math.max(gestureStart.distance, 1), 0.2, 8);
     t.scale = scale;
-    t.rotation = gestureStart.rotation + (g.angle - gestureStart.angle) * 180 / Math.PI;
+    t.rotation = gestureStart.rotation;
     t.x = gestureStart.x + g.center.x - gestureStart.center.x;
     t.y = gestureStart.y + g.center.y - gestureStart.center.y;
   } else if (pointers.size === 1) {
