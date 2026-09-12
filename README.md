@@ -17,6 +17,8 @@ Zdjęcie można dodać z aparatu albo wybrać istniejący plik z galerii. Obrót
 
 Bazę można pobrać z GPS albo ustawić pod celownikiem na OSM. W ustawieniach punktów można niezależnie dodać bazę na początku i na końcu trasy, użyć jej tylko jako mety albo całkowicie usunąć ją z trasy. Trasa może więc być pętlą, trasą otwartą kończącą się w bazie lub trasą bez bazy. Po publikacji zmian GitHub Actions automatycznie aktualizuje GitHub Pages.
 
+Po obliczeniu aplikacja pokazuje wariant rekomendowany oraz, gdy jest dostępny, wariant w przeciwnym kierunku. Każda karta zawiera całkowity dystans i kolejność PK. Dopiero wybranie wariantu włącza eksport GPX i otwarcie Mapy.com. Dla wybranego wariantu wyświetlana jest również duża lista numerów PK przeznaczona do przepisania na papierową mapę lub skopiowania do schowka.
+
 ## GitHub Pages
 
 Workflow wdrażający aplikację znajduje się w `.github/workflows/deploy.yml`. W repozytorium GitHub wybierz Settings → Pages → GitHub Actions. Aplikacja używa bazowej ścieżki `/harpagan-planner/`.

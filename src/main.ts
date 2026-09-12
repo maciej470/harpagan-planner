@@ -4,7 +4,7 @@ import L from 'leaflet';
 import type { Checkpoint, ImagePoint, LatLng, Project } from './types';
 import { saveProject, listProjects } from './storage';
 import { homography, imageToGeo } from './math';
-import { calculateRoute } from './services';
+import { calculateRoute, calculateRouteForOrder } from './services';
 import { gpxFor } from './gpx';
 import { mapyRouteUrlForOrder } from './mapy';
 import { constrainPhotoTranslation } from './photoTransform';
@@ -140,11 +140,11 @@ function renderMapControls() {
     calibration = 'photo'; previewPhoto = false; step = 'map'; refresh();
   };
   el<HTMLButtonElement>('#undo-calibration').onclick = () => {
-    project.controlPoints.pop(); project.route = undefined;
+    project.controlPoints.pop(); invalidateRoute();
     calibration = 'photo'; pendingImage = undefined; previewPhoto = false; refresh(); save();
   };
   el<HTMLButtonElement>('#reset-calibration').onclick = () => {
-    project.controlPoints = []; project.route = undefined;
+    project.controlPoints = []; invalidateRoute();
     pendingImage = undefined; calibration = project.image ? 'photo' : 'idle';
     previewPhoto = false; refresh(); save();
   };
@@ -213,7 +213,7 @@ function renderMapActions() {
       const last = checkpoints.at(-1);
       if (!last) return;
       project.checkpoints = project.checkpoints.filter(p => p.id !== last.id);
-      project.route = undefined; refresh(); save();
+      invalidateRoute(); refresh(); save();
     }, true);
     button('Dodaj PK tutaj', () => {
       const image = imageAtScreenCenter();
@@ -307,7 +307,7 @@ function drawPhotoMarkers() {
     marker.onclick = () => {
       if (!confirm(`Usunąć PK ${point.number} i ustawić go ponownie?`)) return;
       project.checkpoints = project.checkpoints.filter(p => p.id !== point.id);
-      project.route = undefined; refresh(); save();
+      invalidateRoute(); refresh(); save();
     };
     layer.append(marker);
   }
@@ -396,7 +396,7 @@ async function loadImage(file?: File) {
     project.image = canvas.toDataURL('image/jpeg', 0.85);
     project.imageWidth = canvas.width; project.imageHeight = canvas.height;
     project.imageTransform = { x: 0, y: 0, scale: 1, rotation: 0 };
-    project.controlPoints = []; project.route = undefined;
+    project.controlPoints = []; invalidateRoute();
     calibration = 'idle'; pendingImage = undefined; step = 'map';
     refresh(); save();
   } catch {
@@ -407,19 +407,19 @@ async function loadImage(file?: File) {
 function addCheckpoint(geo: LatLng, image?: ImagePoint) {
   const number = String(project.checkpoints.filter(p => p.kind === 'checkpoint').length + 1);
   project.checkpoints.push({ id: id(), number, geo, image, kind: 'checkpoint' });
-  project.route = undefined; refresh(); save();
+  invalidateRoute(); refresh(); save();
 }
 function setBaseAt(geo: LatLng) {
   project.base = geo;
   project.includeBaseStart ??= true; project.includeBaseEnd ??= true;
   project.checkpoints = project.checkpoints.filter(p => p.kind !== 'base');
   project.checkpoints.unshift({ id: id(), number: '', geo, kind: 'base' });
-  project.route = undefined; refresh(); save();
+  invalidateRoute(); refresh(); save();
 }
 function removeBase() {
   project.base = undefined; project.includeBaseStart = false; project.includeBaseEnd = false;
   project.checkpoints = project.checkpoints.filter(p => p.kind !== 'base');
-  project.route = undefined; refresh(); save();
+  invalidateRoute(); refresh(); save();
 }
 function setBase() {
   if (!navigator.geolocation) { const p = map.getCenter(); setBaseAt({ lat: p.lat, lon: p.lng }); return; }
@@ -445,42 +445,58 @@ function renderPointControls() {
   el<HTMLButtonElement>('#points-view').onclick = () => { if (project.image) { photoMode = !photoMode; refresh(); } };
   el<HTMLButtonElement>('#set-base').onclick = setBase;
   document.querySelector<HTMLButtonElement>('#remove-base')?.addEventListener('click', removeBase);
-  el<HTMLInputElement>('#base-start').onchange = e => { project.includeBaseStart = (e.target as HTMLInputElement).checked; project.route = undefined; save(); };
-  el<HTMLInputElement>('#base-end').onchange = e => { project.includeBaseEnd = (e.target as HTMLInputElement).checked; project.route = undefined; save(); };
+  el<HTMLInputElement>('#base-start').onchange = e => { project.includeBaseStart = (e.target as HTMLInputElement).checked; invalidateRoute(); save(); };
+  el<HTMLInputElement>('#base-end').onchange = e => { project.includeBaseEnd = (e.target as HTMLInputElement).checked; invalidateRoute(); save(); };
   const list = el('#checkpoint-list');
   if (!cps.length) { list.innerHTML = '<p class="muted">Nie dodano jeszcze PK.</p>'; return; }
   cps.forEach(p => {
     const row = document.createElement('div'); row.className = 'checkpoint';
     const badge = document.createElement('span'); badge.className = 'badge'; badge.textContent = p.number;
     const input = document.createElement('input'); input.type = 'text'; input.value = p.number; input.setAttribute('aria-label', 'Numer PK');
-    input.onchange = () => { p.number = input.value.trim() || p.number; project.route = undefined; refresh(); save(); };
+    input.onchange = () => { p.number = input.value.trim() || p.number; invalidateRoute(); refresh(); save(); };
     const first = document.createElement('label'), firstRadio = document.createElement('input');
     firstRadio.type = 'radio'; firstRadio.name = 'first'; firstRadio.checked = firstId === p.id;
-    firstRadio.onchange = () => { firstId = p.id; project.route = undefined; save(); };
+    firstRadio.onchange = () => { firstId = p.id; invalidateRoute(); save(); };
     first.append(firstRadio, ' pierwszy');
     const last = document.createElement('label'), lastRadio = document.createElement('input');
     lastRadio.type = 'radio'; lastRadio.name = 'last'; lastRadio.checked = lastId === p.id;
-    lastRadio.onchange = () => { lastId = p.id; project.route = undefined; save(); };
+    lastRadio.onchange = () => { lastId = p.id; invalidateRoute(); save(); };
     last.append(lastRadio, ' ostatni');
     const del = document.createElement('button'); del.className = 'icon'; del.textContent = '×'; del.setAttribute('aria-label', 'Usuń PK');
-    del.onclick = () => { project.checkpoints = project.checkpoints.filter(q => q.id !== p.id); project.route = undefined; refresh(); save(); };
+    del.onclick = () => { project.checkpoints = project.checkpoints.filter(q => q.id !== p.id); invalidateRoute(); refresh(); save(); };
     row.append(badge, input, first, last, del); list.append(row);
   });
 }
 
 function renderRouteControls() {
+  const chosen = project.route;
   el('#route-controls').innerHTML = `
     <div class="card"><h2>Planowanie trasy</h2>
       <p class="muted">Początek i koniec zależą od ustawień bazy. Pierwszy i ostatni PK możesz wskazać ręcznie.</p>
       <div class="button-row"><button id="calculate" class="primary">Oblicz trasę</button>
-      <button id="gpx" class="secondary">Pobierz GPX</button>
-      <button id="mapy" class="secondary">Otwórz Mapy.com</button></div>
-      <div id="route-summary"></div></div>`;
+      <button id="gpx" class="secondary" ${chosen ? '' : 'disabled'}>Pobierz GPX</button>
+      <button id="mapy" class="secondary" ${chosen ? '' : 'disabled'}>Otwórz Mapy.com</button></div>
+      <div id="route-variants"></div><div id="route-summary"></div></div>`;
   el<HTMLButtonElement>('#calculate').onclick = calculate;
   el<HTMLButtonElement>('#gpx').onclick = downloadGpx;
   el<HTMLButtonElement>('#mapy').onclick = openMapy;
+  const variants = project.routeVariants ?? [];
+  const variantsBox = el('#route-variants');
+  if (variants.length) {
+    const title = document.createElement('h3'); title.textContent = 'Wybierz wariant'; variantsBox.append(title);
+    variants.forEach((variant, index) => {
+      const card = document.createElement('button'); card.className = 'route-variant';
+      card.classList.toggle('selected', project.selectedRouteVariant === index);
+      const order = variant.route.order.filter(p => p.kind === 'checkpoint').map(p => p.number).join(' → ');
+      const name = document.createElement('strong'), distance = document.createElement('span'), sequence = document.createElement('small');
+      name.textContent = variant.name; distance.textContent = `${(variant.route.totalDistance / 1000).toFixed(2)} km`; sequence.textContent = `PK: ${order}`;
+      card.append(name, distance, sequence);
+      card.onclick = () => { project.selectedRouteVariant = index; project.route = variant.route; refresh(); fitSelectedRoute(); save(); };
+      variantsBox.append(card);
+    });
+  }
   const route = project.route;
-  if (!route) return;
+  if (!route) { if (variants.length) { const note=document.createElement('p');note.className='muted';note.textContent='Wybierz wariant, aby zobaczyć trasę i włączyć eksport.';variantsBox.append(note); } return; }
   const box = el('#route-summary');
   box.className = 'route-result';
   const order = document.createElement('strong');
@@ -488,6 +504,12 @@ function renderRouteControls() {
   const summary = document.createElement('span');
   summary.textContent = `${(route.totalDistance / 1000).toFixed(2)} km · silnik: ${route.engine}`;
   box.append(order, summary);
+  const paperTitle = document.createElement('h3'); paperTitle.textContent = 'Lista PK do przepisania'; box.append(paperTitle);
+  const paperOrder = route.order.filter(p => p.kind === 'checkpoint').map(p => p.number);
+  const paper = document.createElement('div'); paper.className = 'paper-order'; paper.textContent = paperOrder.join('  →  '); box.append(paper);
+  const copy = document.createElement('button'); copy.className = 'secondary'; copy.textContent = 'Kopiuj listę PK';
+  copy.onclick = async () => { await navigator.clipboard?.writeText(paperOrder.join(' → ')); copy.textContent = 'Skopiowano'; };
+  box.append(copy);
   if (route.warning) { const warning = document.createElement('p'); warning.className = 'warning'; warning.textContent = route.warning; box.append(warning); }
 }
 async function calculate() {
@@ -496,9 +518,36 @@ async function calculate() {
   const button = el<HTMLButtonElement>('#calculate');
   button.disabled = true; button.textContent = 'Obliczanie…';
   try {
-    project.route = await calculateRoute(project.base, cps, cps.find(p => p.id === firstId), cps.find(p => p.id === lastId), { includeBaseStart: project.includeBaseStart !== false, includeBaseEnd: project.includeBaseEnd !== false });
+    const first = cps.find(p => p.id === firstId), last = cps.find(p => p.id === lastId);
+    const recommended = await calculateRoute(project.base, cps, first, last, { includeBaseStart: project.includeBaseStart !== false, includeBaseEnd: project.includeBaseEnd !== false });
+    const variants = [{ name: 'Rekomendowany', route: recommended }];
+    const alternativeOrder = makeAlternativeOrder(recommended.order, first, last);
+    if (alternativeOrder.map(p => p.id).join('|') !== recommended.order.map(p => p.id).join('|')) {
+      await new Promise(resolve => setTimeout(resolve, 1000));
+      variants.push({ name: 'Alternatywny kierunek', route: await calculateRouteForOrder(alternativeOrder) });
+    }
+    project.routeVariants = variants; project.selectedRouteVariant = undefined; project.route = undefined;
     refresh(); save();
   } catch { alert('Nie udało się obliczyć trasy. Spróbuj ponownie.'); button.disabled = false; button.textContent = 'Oblicz trasę'; }
+}
+function makeAlternativeOrder(order: Checkpoint[], first?: Checkpoint, last?: Checkpoint) {
+  const prefix = order[0]?.kind === 'base' ? [order[0]] : [];
+  const suffix = order.at(-1)?.kind === 'base' ? [order.at(-1)!] : [];
+  const checkpoints = order.filter(p => p.kind === 'checkpoint');
+  let alternative: Checkpoint[];
+  if (first && last) alternative = [first, ...checkpoints.filter(p => p.id !== first.id && p.id !== last.id).reverse(), last];
+  else if (first) alternative = [first, ...checkpoints.filter(p => p.id !== first.id).reverse()];
+  else if (last) alternative = [...checkpoints.filter(p => p.id !== last.id).reverse(), last];
+  else alternative = [...checkpoints].reverse();
+  return [...prefix, ...alternative, ...suffix];
+}
+function fitSelectedRoute() {
+  const geometry = project.route?.geometry;
+  if (!geometry?.length) return;
+  map.fitBounds(L.latLngBounds(geometry.map(point => [point.lat, point.lon])), { padding: [24, 24] });
+}
+function invalidateRoute() {
+  project.route = undefined; project.routeVariants = undefined; project.selectedRouteVariant = undefined;
 }
 function downloadGpx() {
   if (!project.route) { alert('Najpierw oblicz trasę.'); return; }
