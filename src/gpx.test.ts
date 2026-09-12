@@ -1,2 +1,3 @@
 import {describe,it,expect} from 'vitest'; import {gpxFor} from './gpx';
 describe('GPX',()=>it('generuje waypoint i ślad',()=>{const p={id:'1',name:'Test',createdAt:0,updatedAt:0,controlPoints:[],checkpoints:[],opacity:.5,imageTransform:{x:0,y:0,scale:1,rotation:0}} as any;const x=gpxFor(p,[{id:'b',number:'',geo:{lat:1,lon:2},kind:'base'}], [{lat:1,lon:2}]);expect(x).toContain('<gpx');expect(x).toContain('<wpt lat="1" lon="2">');expect(x).toContain('<trk>');}));
+it('zachowuje własną nazwę punktu',()=>{const p={name:'Test'} as any;const x=gpxFor(p,[{id:'s',number:'Start',geo:{lat:1,lon:2},kind:'checkpoint'}],[]);expect(x).toContain('<name>Start</name>');expect(x).not.toContain('PK Start');});

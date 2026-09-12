@@ -26,8 +26,6 @@ let step: Step = 'map';
 let calibration: Calibration = 'idle';
 let pendingImage: ImagePoint | undefined;
 let previewPhoto = false;
-let firstId = 'auto';
-let lastId = 'auto';
 let photoMode = false;
 let pointerStart: Pointer | undefined;
 let gestureStart: { distance: number; angle: number; center: Pointer; x: number; y: number; scale: number; rotation: number } | undefined;
@@ -105,7 +103,7 @@ function createApp() {
 
 function resetEditor() {
   step = 'map'; calibration = 'idle'; pendingImage = undefined;
-  previewPhoto = false; photoMode = false; firstId = 'auto'; lastId = 'auto';
+  previewPhoto = false; photoMode = false;
 }
 
 function refresh() {
@@ -180,7 +178,7 @@ function renderLayers() {
         ? 'Przesuń i powiększ OSM. Ustaw to samo miejsce pod celownikiem.'
         : step === 'points' && photoMode
           ? 'Ustaw miejsce na zdjęciu pod celownikiem i użyj przycisku na dole.'
-          : step === 'points' ? 'Przesuń OSM pod celownikiem, aby dodać PK lub bazę.' : '';
+          : step === 'points' ? 'Przesuń OSM pod celownikiem, aby dodać nazwany punkt.' : '';
   help.hidden = !help.textContent;
   if (mapInput) setTimeout(() => map.invalidateSize(), 0);
 }
@@ -195,10 +193,6 @@ function renderMapActions() {
   };
   if (step === 'points' && !photoMode) {
     button(project.image ? 'Pokaż zdjęcie' : 'Brak zdjęcia', () => { if (project.image) { photoMode = true; refresh(); } }, true);
-    button('Ustaw bazę tutaj', () => {
-      const center = map.getCenter(); setBaseAt({ lat: center.lat, lon: center.lng });
-    }, true);
-    if (project.base) button('Usuń bazę', removeBase, true);
     button('Dodaj PK tutaj', () => {
       const center = map.getCenter(); addCheckpoint({ lat: center.lat, lon: center.lng });
     });
@@ -409,44 +403,22 @@ function addCheckpoint(geo: LatLng, image?: ImagePoint) {
   project.checkpoints.push({ id: id(), number, geo, image, kind: 'checkpoint' });
   invalidateRoute(); refresh(); save();
 }
-function setBaseAt(geo: LatLng) {
-  project.base = geo;
-  project.includeBaseStart ??= true; project.includeBaseEnd ??= true;
-  project.checkpoints = project.checkpoints.filter(p => p.kind !== 'base');
-  project.checkpoints.unshift({ id: id(), number: '', geo, kind: 'base' });
-  invalidateRoute(); refresh(); save();
-}
-function removeBase() {
-  project.base = undefined; project.includeBaseStart = false; project.includeBaseEnd = false;
-  project.checkpoints = project.checkpoints.filter(p => p.kind !== 'base');
-  invalidateRoute(); refresh(); save();
-}
-function setBase() {
-  if (!navigator.geolocation) { const p = map.getCenter(); setBaseAt({ lat: p.lat, lon: p.lng }); return; }
-  navigator.geolocation.getCurrentPosition(
-    p => setBaseAt({ lat: p.coords.latitude, lon: p.coords.longitude }),
-    () => { alert('GPS niedostępny. Ustaw bazę pod celownikiem na mapie OSM.'); },
-    { enableHighAccuracy: true, timeout: 8000, maximumAge: 300000 }
-  );
-}
 function renderPointControls() {
   const cps = project.checkpoints.filter(p => p.kind === 'checkpoint');
-  const hasBase = Boolean(project.base), baseStart = project.includeBaseStart !== false, baseEnd = project.includeBaseEnd !== false;
   el('#points-controls').innerHTML = `
     <div class="card"><h2>Punkty kontrolne</h2>
       <p class="muted">Widok: ${photoMode ? 'zdjęcie' : 'OSM'}. Ustaw miejsce pod celownikiem i użyj przycisku na mapie.</p>
-      <div class="button-row"><button id="points-view" class="secondary">${photoMode ? 'Pokaż OSM' : 'Pokaż zdjęcie'}</button>
-      <button id="set-base" class="secondary">Baza z GPS</button>${hasBase ? '<button id="remove-base" class="ghost">Usuń bazę</button>' : ''}</div>
-      <div class="base-options"><strong>${hasBase ? 'Baza jest ustawiona' : 'Baza nie jest ustawiona'}</strong>
-      <label><input id="base-start" type="checkbox" ${baseStart ? 'checked' : ''} ${hasBase ? '' : 'disabled'}> Baza jako początek</label>
-      <label><input id="base-end" type="checkbox" ${baseEnd ? 'checked' : ''} ${hasBase ? '' : 'disabled'}> Baza jako koniec</label></div>
+      <div class="button-row"><button id="points-view" class="secondary">${photoMode ? 'Pokaż OSM' : 'Pokaż zdjęcie'}</button></div>
+      <div class="endpoint-options"><label>Początek trasy<select id="route-start"></select></label>
+      <label>Koniec trasy<select id="route-end"></select></label></div>
       <div id="checkpoint-list"></div></div>`;
   el<HTMLButtonElement>('#points-view').disabled = !project.image;
   el<HTMLButtonElement>('#points-view').onclick = () => { if (project.image) { photoMode = !photoMode; refresh(); } };
-  el<HTMLButtonElement>('#set-base').onclick = setBase;
-  document.querySelector<HTMLButtonElement>('#remove-base')?.addEventListener('click', removeBase);
-  el<HTMLInputElement>('#base-start').onchange = e => { project.includeBaseStart = (e.target as HTMLInputElement).checked; invalidateRoute(); save(); };
-  el<HTMLInputElement>('#base-end').onchange = e => { project.includeBaseEnd = (e.target as HTMLInputElement).checked; invalidateRoute(); save(); };
+  for (const [selector, selected, key] of [['#route-start', project.startPointId ?? 'auto', 'startPointId'], ['#route-end', project.endPointId ?? 'auto', 'endPointId']] as const) {
+    const select = el<HTMLSelectElement>(selector); select.add(new Option('Wybierz automatycznie', 'auto'));
+    cps.forEach(point => select.add(new Option(point.number, point.id))); select.value = selected;
+    select.onchange = () => { project[key] = select.value === 'auto' ? undefined : select.value; invalidateRoute(); save(); };
+  }
   const list = el('#checkpoint-list');
   if (!cps.length) { list.innerHTML = '<p class="muted">Nie dodano jeszcze PK.</p>'; return; }
   cps.forEach(p => {
@@ -454,17 +426,9 @@ function renderPointControls() {
     const badge = document.createElement('span'); badge.className = 'badge'; badge.textContent = p.number;
     const input = document.createElement('input'); input.type = 'text'; input.value = p.number; input.setAttribute('aria-label', 'Numer PK');
     input.onchange = () => { p.number = input.value.trim() || p.number; invalidateRoute(); refresh(); save(); };
-    const first = document.createElement('label'), firstRadio = document.createElement('input');
-    firstRadio.type = 'radio'; firstRadio.name = 'first'; firstRadio.checked = firstId === p.id;
-    firstRadio.onchange = () => { firstId = p.id; invalidateRoute(); save(); };
-    first.append(firstRadio, ' pierwszy');
-    const last = document.createElement('label'), lastRadio = document.createElement('input');
-    lastRadio.type = 'radio'; lastRadio.name = 'last'; lastRadio.checked = lastId === p.id;
-    lastRadio.onchange = () => { lastId = p.id; invalidateRoute(); save(); };
-    last.append(lastRadio, ' ostatni');
     const del = document.createElement('button'); del.className = 'icon'; del.textContent = '×'; del.setAttribute('aria-label', 'Usuń PK');
-    del.onclick = () => { project.checkpoints = project.checkpoints.filter(q => q.id !== p.id); invalidateRoute(); refresh(); save(); };
-    row.append(badge, input, first, last, del); list.append(row);
+    del.onclick = () => { project.checkpoints = project.checkpoints.filter(q => q.id !== p.id);if(project.startPointId===p.id)project.startPointId=undefined;if(project.endPointId===p.id)project.endPointId=undefined;invalidateRoute();refresh();save(); };
+    row.append(badge, input, del); list.append(row);
   });
 }
 
@@ -472,7 +436,7 @@ function renderRouteControls() {
   const chosen = project.route;
   el('#route-controls').innerHTML = `
     <div class="card"><h2>Planowanie trasy</h2>
-      <p class="muted">Początek i koniec zależą od ustawień bazy. Pierwszy i ostatni PK możesz wskazać ręcznie.</p>
+      <p class="muted">Wybierz początek i koniec na ekranie Punktów. Pozostałe punkty zostaną uporządkowane automatycznie.</p>
       <div class="button-row"><button id="calculate" class="primary">Oblicz trasę</button>
       <button id="gpx" class="secondary" ${chosen ? '' : 'disabled'}>Pobierz GPX</button>
       <button id="mapy" class="secondary" ${chosen ? '' : 'disabled'}>Otwórz Mapy.com</button></div>
@@ -500,7 +464,7 @@ function renderRouteControls() {
   const box = el('#route-summary');
   box.className = 'route-result';
   const order = document.createElement('strong');
-  order.textContent = route.order.map(p => p.kind === 'base' ? 'Baza' : `PK ${p.number}`).join(' → ');
+  order.textContent = route.order.map(p => p.kind === 'base' ? 'Baza' : p.number).join(' → ');
   const summary = document.createElement('span');
   summary.textContent = `${(route.totalDistance / 1000).toFixed(2)} km · silnik: ${route.engine}`;
   box.append(order, summary);
@@ -518,8 +482,8 @@ async function calculate() {
   const button = el<HTMLButtonElement>('#calculate');
   button.disabled = true; button.textContent = 'Obliczanie…';
   try {
-    const first = cps.find(p => p.id === firstId), last = cps.find(p => p.id === lastId);
-    const recommended = await calculateRoute(project.base, cps, first, last, { includeBaseStart: project.includeBaseStart !== false, includeBaseEnd: project.includeBaseEnd !== false });
+    const first = cps.find(p => p.id === project.startPointId), last = cps.find(p => p.id === project.endPointId);
+    const recommended = await calculateRoute(undefined, cps, first, last, { includeBaseStart: false, includeBaseEnd: false });
     const variants = [{ name: 'Rekomendowany', route: recommended }];
     const alternativeOrder = makeAlternativeOrder(recommended.order, first, last);
     if (alternativeOrder.map(p => p.id).join('|') !== recommended.order.map(p => p.id).join('|')) {
@@ -547,7 +511,10 @@ function fitSelectedRoute() {
   map.fitBounds(L.latLngBounds(geometry.map(point => [point.lat, point.lon])), { padding: [24, 24] });
 }
 function invalidateRoute() {
-  project.route = undefined; project.routeVariants = undefined; project.selectedRouteVariant = undefined;
+  invalidateRouteFor(project);
+}
+function invalidateRouteFor(target: Project) {
+  target.route = undefined; target.routeVariants = undefined; target.selectedRouteVariant = undefined;
 }
 function downloadGpx() {
   if (!project.route) { alert('Najpierw oblicz trasę.'); return; }
@@ -565,7 +532,7 @@ function drawMarkers() {
   markers.forEach(m => m.remove()); markers = [];
   project.checkpoints.forEach(p => {
     const marker = L.marker([p.geo.lat, p.geo.lon], {
-      icon: L.divIcon({ className: 'marker', html: `<b>${p.kind === 'base' ? 'B' : p.number.replace(/[&<>"']/g, '')}</b>`, iconSize: [34, 34] })
+      icon: L.divIcon({ className: 'marker', html: `<b>${markerLabel(p)}</b>`, iconSize: [34, 34] })
     }).addTo(map);
     markers.push(marker);
   });
@@ -574,6 +541,10 @@ function drawMarkers() {
     markers.push(line);
   }
 }
+function markerLabel(point: Checkpoint) {
+  const label = point.kind === 'base' ? 'B' : point.number.replace(/[&<>"']/g, '');
+  return /^\d{1,3}$/.test(label) ? label : label.slice(0, 2).toUpperCase();
+}
 async function openProject() {
   const projects = await listProjects();
   if (!projects.length) { alert('Brak zapisanych projektów.'); return; }
@@ -581,9 +552,22 @@ async function openProject() {
   const choice = projects.length === 1 ? '1' : prompt(`Wybierz numer projektu:\n${names}`);
   const chosen = projects[Number(choice) - 1];
   if (!chosen) return;
-  project = chosen; resetEditor();
+  project = migrateProject(chosen); resetEditor();
   calibration = project.controlPoints.length >= 4 ? 'done' : 'idle';
   refresh();
+}
+function migrateProject(source: Project) {
+  const oldBase = source.checkpoints.find(point => point.kind === 'base');
+  if (oldBase || source.base) {
+    const geo = oldBase?.geo ?? source.base!;
+    const migrated: Checkpoint = { id: oldBase?.id ?? id(), number: 'Baza', geo, kind: 'checkpoint' };
+    source.checkpoints = [migrated, ...source.checkpoints.filter(point => point.kind !== 'base')];
+    source.startPointId ??= source.includeBaseStart !== false ? migrated.id : undefined;
+    source.endPointId ??= source.includeBaseEnd !== false ? migrated.id : undefined;
+    source.base = undefined; source.includeBaseStart = undefined; source.includeBaseEnd = undefined;
+    invalidateRouteFor(source); void saveProject(source);
+  }
+  return source;
 }
 function save() { project.updatedAt = Date.now(); void saveProject(project).catch(() => alert('Nie udało się zapisać projektu. Sprawdź wolne miejsce w telefonie.')); }
 
