@@ -7,6 +7,7 @@ import { homography, imageToGeo } from './math';
 import { calculateRoute } from './services';
 import { gpxFor } from './gpx';
 import { mapyRouteUrlForOrder } from './mapy';
+import { constrainPhotoTranslation } from './photoTransform';
 
 type Step = 'map' | 'points' | 'route';
 type Calibration = 'idle' | 'photo' | 'osm' | 'done';
@@ -206,6 +207,7 @@ function renderMapActions() {
   if (!project.image) return;
   if (step === 'points' && photoMode) {
     button('Pokaż OSM', () => { photoMode = false; refresh(); }, true);
+    button('Wyśrodkuj zdjęcie', centerPhoto, true);
     button('Cofnij ostatni PK', () => {
       const checkpoints = project.checkpoints.filter(p => p.kind === 'checkpoint');
       const last = checkpoints.at(-1);
@@ -222,13 +224,19 @@ function renderMapActions() {
     return;
   }
   if (step !== 'map') return;
-  if (calibration === 'idle' || calibration === 'done') {
+  if (calibration === 'idle') {
     button('Obróć zdjęcie ↶', () => rotate(-5), true);
     button('Obróć zdjęcie ↷', () => rotate(5), true);
+    button('Wyśrodkuj', centerPhoto, true);
     button('Rozpocznij kalibrację', () => { calibration = 'photo'; refresh(); });
     return;
   }
+  if (calibration === 'done') {
+    button('Kalibruj ponownie', () => { calibration = 'photo'; refresh(); });
+    return;
+  }
   if (calibration === 'photo') {
+    button('Wyśrodkuj zdjęcie', centerPhoto, true);
     button('Zablokuj punkt na zdjęciu', () => {
       const point = imageAtScreenCenter();
       if (!point) { alert('Ustaw zdjęcie pod celownikiem.'); return; }
@@ -263,8 +271,15 @@ function rotate(degrees: number) {
   positionPhoto(); save();
 }
 
+function centerPhoto() {
+  project.imageTransform.x = 0; project.imageTransform.y = 0; project.imageTransform.scale = 1;
+  positionPhoto(); save();
+}
+
 function positionPhoto() {
   const img = el<HTMLImageElement>('#photo-image');
+  const viewport = el('#map-wrap').getBoundingClientRect();
+  project.imageTransform = constrainPhotoTranslation(project.imageTransform, { width: img.offsetWidth, height: img.offsetHeight }, { width: viewport.width, height: viewport.height });
   const t = project.imageTransform;
   img.style.transform = `translate(-50%, -50%) translate(${t.x}px, ${t.y}px) rotate(${t.rotation}deg) scale(${t.scale})`;
   drawPhotoMarkers();
