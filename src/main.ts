@@ -87,6 +87,7 @@ function createApp() {
     refresh();
   }));
   const layer = el('#photo-layer');
+  el<HTMLImageElement>('#photo-image').onload = () => positionPhoto();
   layer.addEventListener('pointerdown', photoPointerDown);
   layer.addEventListener('pointermove', photoPointerMove);
   layer.addEventListener('pointerup', photoPointerUp);
@@ -165,7 +166,7 @@ function renderLayers() {
   layer.style.pointerEvents = photoInteractive ? 'auto' : 'none';
   el('#map').style.visibility = photoVisible ? 'hidden' : 'visible';
   const reticle = el('#reticle');
-  reticle.hidden = !photoStage && !osmStage;
+  reticle.hidden = !photoStage && !osmStage && !(step === 'points' && photoMode);
   const mapInput = !photoVisible && !photoStage;
   map.dragging[mapInput ? 'enable' : 'disable']();
   map.touchZoom[mapInput ? 'enable' : 'disable']();
@@ -194,7 +195,25 @@ function renderMapActions() {
     b.className = secondary ? 'secondary' : 'primary';
     b.textContent = label; b.onclick = action; area.append(b); return b;
   };
-  if (step !== 'map' || !project.image) return;
+  if (!project.image) return;
+  if (step === 'points' && photoMode) {
+    button('Pokaż OSM', () => { photoMode = false; refresh(); }, true);
+    button('Cofnij ostatni PK', () => {
+      const checkpoints = project.checkpoints.filter(p => p.kind === 'checkpoint');
+      const last = checkpoints.at(-1);
+      if (!last) return;
+      project.checkpoints = project.checkpoints.filter(p => p.id !== last.id);
+      project.route = undefined; refresh(); save();
+    }, true);
+    button('Dodaj PK tutaj', () => {
+      const image = imageAtScreenCenter();
+      if (!image) { alert('Ustaw zdjęcie pod celownikiem.'); return; }
+      try { addCheckpoint(imageToGeo(image, homography(project.controlPoints)), image); }
+      catch { alert('Kalibracja jest nieprawidłowa. Wróć do kroku Mapa i popraw punkty.'); }
+    });
+    return;
+  }
+  if (step !== 'map') return;
   if (calibration === 'idle' || calibration === 'done') {
     button('Obróć zdjęcie ↶', () => rotate(-5), true);
     button('Obróć zdjęcie ↷', () => rotate(5), true);
@@ -242,9 +261,38 @@ function positionPhoto() {
   const img = el<HTMLImageElement>('#photo-image');
   const t = project.imageTransform;
   img.style.transform = `translate(-50%, -50%) translate(${t.x}px, ${t.y}px) rotate(${t.rotation}deg) scale(${t.scale})`;
+  drawPhotoMarkers();
 }
 
-function canMovePhoto() { return calibration === 'photo' && step === 'map'; }
+function drawPhotoMarkers() {
+  const layer = el('#photo-layer');
+  layer.querySelectorAll('.photo-checkpoint').forEach(node => node.remove());
+  if (step !== 'points' || !photoMode) return;
+  const img = el<HTMLImageElement>('#photo-image'), t = project.imageTransform;
+  const width = img.offsetWidth, height = img.offsetHeight;
+  if (!width || !height) return;
+  const angle = t.rotation * Math.PI / 180;
+  for (const point of project.checkpoints.filter(p => p.kind === 'checkpoint' && p.image)) {
+    const image = point.image!;
+    const localX = image.x / (project.imageWidth ?? img.naturalWidth) * width - width / 2;
+    const localY = image.y / (project.imageHeight ?? img.naturalHeight) * height - height / 2;
+    const x = (Math.cos(angle) * localX - Math.sin(angle) * localY) * t.scale;
+    const y = (Math.sin(angle) * localX + Math.cos(angle) * localY) * t.scale;
+    const marker = document.createElement('button');
+    marker.className = 'photo-checkpoint'; marker.textContent = point.number;
+    marker.style.left = `calc(50% + ${t.x + x}px)`; marker.style.top = `calc(50% + ${t.y + y}px)`;
+    marker.setAttribute('aria-label', `PK ${point.number}. Dotknij, aby usunąć i ustawić ponownie`);
+    marker.onpointerdown = event => event.stopPropagation();
+    marker.onclick = () => {
+      if (!confirm(`Usunąć PK ${point.number} i ustawić go ponownie?`)) return;
+      project.checkpoints = project.checkpoints.filter(p => p.id !== point.id);
+      project.route = undefined; refresh(); save();
+    };
+    layer.append(marker);
+  }
+}
+
+function canMovePhoto() { return (calibration === 'photo' && step === 'map') || (step === 'points' && photoMode); }
 function clamp(v: number, min: number, max: number) { return Math.max(min, Math.min(max, v)); }
 function measureGesture() {
   const [a, b] = [...pointers.values()];
@@ -292,12 +340,7 @@ function photoPointerUp(e: PointerEvent) {
   pointers.delete(e.pointerId);
   if (pointers.size === 1) { gestureStart = undefined; pointerStart = [...pointers.values()][0]; }
   if (!pointers.size) { gestureStart = undefined; pointerStart = undefined; save(); }
-  if (wasTap && step === 'points' && photoMode && calibration === 'done') {
-    try {
-      const p = imageAtScreen({ x: e.clientX, y: e.clientY });
-      if (p) addCheckpoint(imageToGeo(p, homography(project.controlPoints)));
-    } catch { alert('Kalibracja jest nieprawidłowa. Spróbuj dodać inne punkty kalibracyjne.'); }
-  }
+  void wasTap;
 }
 
 function imageAtScreenCenter(): ImagePoint | undefined {
@@ -340,9 +383,9 @@ async function loadImage(file?: File) {
   }
 }
 
-function addCheckpoint(geo: LatLng) {
+function addCheckpoint(geo: LatLng, image?: ImagePoint) {
   const number = String(project.checkpoints.filter(p => p.kind === 'checkpoint').length + 1);
-  project.checkpoints.push({ id: id(), number, geo, kind: 'checkpoint' });
+  project.checkpoints.push({ id: id(), number, geo, image, kind: 'checkpoint' });
   project.route = undefined; refresh(); save();
 }
 function setBase() {

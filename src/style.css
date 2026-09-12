@@ -16,3 +16,4 @@ img.photo-interactive{image-orientation:from-image}
 #map-actions button{pointer-events:auto;min-height:48px;box-shadow:0 3px 14px #102a4355}#map-actions .primary{flex:1;max-width:420px}
 .hero input[type=text]{display:block;width:100%;max-width:620px;margin-top:5px;padding:12px;border:1px solid #bcccdc;border-radius:10px;font-size:16px}button:disabled{opacity:.45;cursor:not-allowed}
 .leaflet-bottom.leaflet-right{bottom:68px}
+.photo-checkpoint{position:absolute;z-index:650;transform:translate(-50%,-50%);width:36px;height:36px;border:3px solid #fff;border-radius:50%;background:#e85d04;color:#fff;font-weight:800;font-size:15px;box-shadow:0 2px 8px #0008;touch-action:manipulation}
