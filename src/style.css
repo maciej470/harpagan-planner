@@ -6,3 +6,4 @@ img.photo-interactive{image-orientation:from-image}
 #lock-control{position:fixed;left:12px;right:12px;bottom:calc(18px + env(safe-area-inset-bottom));z-index:1000;box-shadow:0 3px 14px #102a4355}
 #finish-calibration{position:fixed;left:12px;right:12px;bottom:calc(70px + env(safe-area-inset-bottom));z-index:1000;box-shadow:0 3px 14px #102a4355}
 .map-wrap{touch-action:none;overscroll-behavior:contain;user-select:none}.map-wrap #map{touch-action:none}
+.layer-switch{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin:12px 0}.layer-switch button{padding:11px 6px;border:1px solid #bae6fd;border-radius:10px;background:#f0f9ff;color:#075985;font-weight:700}.layer-switch button.active{background:#0077b6;color:#fff;border-color:#0077b6}
