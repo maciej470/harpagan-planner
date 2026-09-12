@@ -8,6 +8,7 @@ import { calculateRoute, calculateRouteForOrder } from './services';
 import { gpxFor } from './gpx';
 import { mapyRouteUrlForOrder } from './mapy';
 import { constrainPhotoTranslation } from './photoTransform';
+import { alternativeOrders } from './variants';
 
 type Step = 'map' | 'points' | 'route';
 type Calibration = 'idle' | 'photo' | 'osm' | 'done';
@@ -484,26 +485,17 @@ async function calculate() {
   try {
     const first = cps.find(p => p.id === project.startPointId), last = cps.find(p => p.id === project.endPointId);
     const recommended = await calculateRoute(undefined, cps, first, last, { includeBaseStart: false, includeBaseEnd: false });
-    const variants = [{ name: 'Rekomendowany', route: recommended }];
-    const alternativeOrder = makeAlternativeOrder(recommended.order, first, last);
-    if (alternativeOrder.map(p => p.id).join('|') !== recommended.order.map(p => p.id).join('|')) {
+    const calculated = [recommended];
+    const alternatives = alternativeOrders(recommended.order, Boolean(first), Boolean(last), 2);
+    for (const alternativeOrder of alternatives) {
       await new Promise(resolve => setTimeout(resolve, 1000));
-      variants.push({ name: 'Alternatywny kierunek', route: await calculateRouteForOrder(alternativeOrder) });
+      calculated.push(await calculateRouteForOrder(alternativeOrder));
     }
+    calculated.sort((a, b) => a.totalDistance - b.totalDistance);
+    const variants = calculated.map((route, index) => ({ name: index === 0 ? 'Najkrótszy wariant' : `Wariant ${index + 1}`, route }));
     project.routeVariants = variants; project.selectedRouteVariant = undefined; project.route = undefined;
     refresh(); save();
   } catch { alert('Nie udało się obliczyć trasy. Spróbuj ponownie.'); button.disabled = false; button.textContent = 'Oblicz trasę'; }
-}
-function makeAlternativeOrder(order: Checkpoint[], first?: Checkpoint, last?: Checkpoint) {
-  const prefix = order[0]?.kind === 'base' ? [order[0]] : [];
-  const suffix = order.at(-1)?.kind === 'base' ? [order.at(-1)!] : [];
-  const checkpoints = order.filter(p => p.kind === 'checkpoint');
-  let alternative: Checkpoint[];
-  if (first && last) alternative = [first, ...checkpoints.filter(p => p.id !== first.id && p.id !== last.id).reverse(), last];
-  else if (first) alternative = [first, ...checkpoints.filter(p => p.id !== first.id).reverse()];
-  else if (last) alternative = [...checkpoints.filter(p => p.id !== last.id).reverse(), last];
-  else alternative = [...checkpoints].reverse();
-  return [...prefix, ...alternative, ...suffix];
 }
 function fitSelectedRoute() {
   const geometry = project.route?.geometry;
