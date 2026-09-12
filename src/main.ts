@@ -1,43 +1,467 @@
-import 'leaflet/dist/leaflet.css'; import './style.css'; import L from 'leaflet'; import type {Project,Checkpoint,ControlPoint,LatLng} from './types'; import {saveProject,listProjects} from './storage'; import {homography,imageToGeo} from './math'; import {calculateRoute} from './services'; import {gpxFor} from './gpx';
-const $=(s:string)=>document.querySelector(s) as HTMLElement; const uid=()=>crypto.randomUUID(); let project:Project={id:uid(),name:'Nowa pętla',createdAt:Date.now(),updatedAt:Date.now(),controlPoints:[],checkpoints:[],opacity:.55,imageTransform:{x:0,y:0,scale:1,rotation:0}}; let map:L.Map;let photo:L.ImageOverlay|undefined;let mode='start';let selectedFirst='auto',selectedLast='auto';let pendingImage:{x:number;y:number}|undefined;
-function render(){document.querySelector('#app')!.innerHTML=`<header><div><span class="eyebrow">ERNO HARPAGAN</span><h1>Harpagan Route Planner</h1></div><button id="theme" class="icon">☾</button></header><main><section class="hero"><p>Załaduj mapę rajdu, dopasuj ją do OSM i zaplanuj pieszą pętlę.</p><div class="actions"><button id="new" class="primary">＋ Nowy projekt</button><button id="open" class="secondary">Otwórz zapisany</button></div><div class="actions photo-actions"><button id="camera" class="primary">📷 Z aparatu</button><button id="gallery" class="secondary">🖼 Z galerii</button><input id="camera-input" type="file" accept="image/*" capture="environment" hidden><input id="gallery-input" type="file" accept="image/*" hidden></div></section><section class="workspace"><nav class="steps"><button class="active" data-mode="map">1 Mapa</button><button data-mode="points">2 Punkty</button><button data-mode="route">3 Trasa</button></nav><div class="map-wrap"><div id="map"></div><div id="photo-layer"></div><div class="map-help">Dotknij mapy, aby dodać punkt. Zdjęcie możesz przesuwać gestem.</div></div><div class="controls"><div id="map-controls"></div><div id="points-controls" hidden></div><div id="route-controls" hidden></div></div></section><footer><small>© OpenStreetMap contributors · Trasy: Valhalla / geometria awaryjna</small></footer></main>`;setup();}
-function setup(){map=L.map('map',{zoomControl:false}).setView([54.35,18.65],11);L.control.zoom({position:'bottomright'}).addTo(map);L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{attribution:'© OpenStreetMap contributors',maxZoom:19}).addTo(map);map.on('click',e=>addMapPoint({lat:e.latlng.lat,lon:e.latlng.lng}));$('#new').onclick=()=>{project={...project,id:uid(),name:'Nowa pętla',createdAt:Date.now(),updatedAt:Date.now(),controlPoints:[],checkpoints:[],image:undefined,route:undefined};render();};$('#open').onclick=openProject;$('#theme').onclick=()=>document.body.classList.toggle('dark');$('#camera').onclick=()=>($('#camera-input') as HTMLInputElement).click();$('#gallery').onclick=()=>($('#gallery-input') as HTMLInputElement).click();$('#camera-input').onchange=e=>loadImage((e.target as HTMLInputElement).files?.[0]);$('#gallery-input').onchange=e=>loadImage((e.target as HTMLInputElement).files?.[0]);document.querySelectorAll('[data-mode]').forEach(b=>b.addEventListener('click',()=>switchMode((b as HTMLElement).dataset.mode!)));renderControls();redraw();}
-function switchMode(m:string){mode=m;document.querySelectorAll('[data-mode]').forEach(b=>b.classList.toggle('active',(b as HTMLElement).dataset.mode===m));$('#map-controls').hidden=m!=='map';$('#points-controls').hidden=m!=='points';$('#route-controls').hidden=m!=='route';renderControls();}
-function renderControls(){if(!$('#map-controls'))return;$('#map-controls').innerHTML=`<div class="card"><h2>Dopasuj mapę</h2><p class="muted">Dodaj zdjęcie, ustaw je gestami, a następnie wskaż punkty kontrolne na zdjęciu i mapie cyfrowej.</p><label>Przezroczystość <input id="opacity" type="range" min="0" max="1" step=".05" value="${project.opacity}"></label><div class="button-row"><button id="calibrate" class="primary">Dodaj punkt kalibracyjny</button><button id="base" class="secondary">Tu jest baza</button><button id="reset" class="ghost">Wyczyść kalibrację</button></div><p class="status">${project.controlPoints.length}/4 punktów kalibracyjnych</p></div>`;$('#points-controls').innerHTML=`<div class="card"><h2>Punkty kontrolne</h2><div class="button-row"><button id="add-checkpoint" class="primary">＋ Dodaj PK</button><button id="set-base" class="secondary">Ustaw bazę GPS</button></div><div id="checkpoint-list"></div></div>`;$('#route-controls').innerHTML=`<div class="card"><h2>Planowanie trasy</h2><p class="muted">Kolejność: baza → pierwszy PK → pozostałe PK → ostatni PK → baza.</p><div class="button-row"><button id="calculate" class="primary">Oblicz trasę</button><button id="gpx" class="secondary">Pobierz GPX</button><button id="mapy" class="secondary">Otwórz Mapy.com</button></div><div id="route-summary"></div></div>`;$('#opacity').oninput=e=>{project.opacity=Number((e.target as HTMLInputElement).value);redraw();autosave();};$('#calibrate').onclick=()=>{mode='calibrate';$('.map-help').textContent='Wskaż 4 miejsca na cyfrowej mapie. Następnie zostaną zapisane jako punkty kalibracyjne.';};$('#base').onclick=()=>{if(map){const c=map.getCenter();project.base={lat:c.lat,lon:c.lng};markBase(project.base);autosave();}};$('#reset').onclick=()=>{project.controlPoints=[];project.route=undefined;redraw();renderControls();autosave();};$('#add-checkpoint').onclick=()=>{const c=map.getCenter();const n=String(project.checkpoints.filter(p=>p.kind==='checkpoint').length+1);project.checkpoints.push({id:uid(),number:n,geo:{lat:c.lat,lon:c.lng},kind:'checkpoint'});redraw();renderControls();autosave();};$('#set-base').onclick=()=>{project.base={lat:map.getCenter().lat,lon:map.getCenter().lng};markBase(project.base);autosave();};$('#calculate').onclick=calculate;$('#gpx').onclick=downloadGpx;$('#mapy').onclick=openMapy;renderCheckpointList();renderRouteSummary();}
-function showFinishCalibration(){if(document.querySelector('#finish-calibration'))return;const b=document.createElement('button');b.id='finish-calibration';b.className='primary';b.textContent='Zakończ kalibrację';b.onclick=()=>{b.remove();mode='points';$('.map-help').textContent='Kalibracja zakończona. Możesz teraz dodawać punkty kontrolne.';renderPhoto();renderControls();redraw();};document.body.append(b);}
-function showLockControl(){const host=$('#map-controls .card');if(!host||document.querySelector('#lock-control'))return;const b=document.createElement('button');b.id='lock-control';b.className='primary';b.textContent='Potwierdź punkt';b.onclick=()=>{if(!pendingImage||!map)return;const pin=document.querySelector('.photo-pin') as HTMLElement|null;const mr=map.getContainer().getBoundingClientRect();if(!pin)return;const pr=pin.getBoundingClientRect();const ll=map.containerPointToLatLng([pr.left+pr.width/2-mr.left,pr.top+pr.height/2-mr.top]);pendingGeo={lat:ll.lat,lon:ll.lng};const geo=pendingGeo;project.controlPoints.push({image:pendingImage,geo});pendingImage=undefined;pendingGeo=undefined;mode='calibrate-image';$('.map-help').textContent=`${Math.min(project.controlPoints.length,4)}/4: wybierz kolejny punkt na zdjęciu.`;renderControls();redraw();autosave();if(project.controlPoints.length>=4)showFinishCalibration();};host.append(b);}
-function addMapPoint(geo:LatLng){if(mode==='calibrate-map'&&pendingImage){pendingGeo=geo;mode='calibrate-lock';$('.map-help').textContent='Punkt wybrany na obu warstwach. Jeśli pasuje, kliknij „Zablokuj punkt” poniżej.';renderControls();redraw();showLockControl();}else if(mode==='points'){project.checkpoints.push({id:uid(),number:String(project.checkpoints.length+1),geo,kind:'checkpoint'});redraw();renderControls();autosave();}}
-function loadImage(file?:File){if(!file)return;const r=new FileReader();r.onload=()=>{const img=new Image();img.onload=()=>{project.image=String(r.result);project.imageWidth=img.naturalWidth;project.imageHeight=img.naturalHeight;project.updatedAt=Date.now();redraw();autosave();};img.src=String(r.result);};r.readAsDataURL(file);}
-function imagePoint(ev:PointerEvent,img:HTMLImageElement){const rect=img.getBoundingClientRect();return{x:Math.max(0,Math.min(project.imageWidth??rect.width,((ev.clientX-rect.left)/rect.width)*(project.imageWidth??rect.width))),y:Math.max(0,Math.min(project.imageHeight??rect.height,((ev.clientY-rect.top)/rect.height)*(project.imageHeight??rect.height)))};}
-function renderPhoto(){const layer=$('#photo-layer');if(!layer)return;layer.innerHTML='';if(!project.image)return;const img=document.createElement('img');img.src=project.image;img.alt='Zdjęcie mapy';img.className='photo-interactive';img.style.opacity=String(project.opacity);img.style.pointerEvents=['move-photo','calibrate','calibrate-image','point-image'].includes(mode)?'auto':'none';img.style.transform=`translate(calc(-50% + ${project.imageTransform.x}px),calc(-50% + ${project.imageTransform.y}px)) rotate(${project.imageTransform.rotation}deg) scale(${project.imageTransform.scale})`;img.addEventListener('pointerdown',e=>{if(!['move-photo','calibrate','calibrate-image','point-image'].includes(mode))return;e.stopPropagation();if(mode==='calibrate'||mode==='calibrate-image'||mode==='point-image'){const p=imagePoint(e,img);if(mode==='point-image'&&project.controlPoints.length>=4){const h=homography(project.controlPoints);const geo=imageToGeo(p,h);project.checkpoints.push({id:uid(),number:String(project.checkpoints.filter(x=>x.kind==='checkpoint').length+1),geo,kind:'checkpoint'});mode='points';renderControls();redraw();autosave();return;}pendingImage=p;mode='calibrate-map';renderControls();return;}const startX=e.clientX,startY=e.clientY,ox=project.imageTransform.x,oy=project.imageTransform.y;const move=(m:PointerEvent)=>{project.imageTransform.x=ox+m.clientX-startX;project.imageTransform.y=oy+m.clientY-startY;img.style.transform=`translate(calc(-50% + ${project.imageTransform.x}px),calc(-50% + ${project.imageTransform.y}px)) rotate(${project.imageTransform.rotation}deg) scale(${project.imageTransform.scale})`;};const up=()=>{window.removeEventListener('pointermove',move);window.removeEventListener('pointerup',up);autosave();};window.addEventListener('pointermove',move);window.addEventListener('pointerup',up);});img.addEventListener('wheel',e=>{if(mode!=='move-photo')return;e.preventDefault();project.imageTransform.scale=Math.max(.25,Math.min(4,project.imageTransform.scale-(e.deltaY*.001)));renderPhoto();autosave();},{passive:false});const move=document.createElement('button');move.id='move-photo';move.className='photo-tool primary';move.textContent=mode==='move-photo'?'Zakończ przesuwanie':'Przesuń / skaluj zdjęcie';move.onclick=()=>{mode=mode==='move-photo'?'map':'move-photo';renderPhoto();};layer.append(move,img);}
-function redraw(){if(!map)return;document.querySelectorAll('.marker').forEach(x=>x.remove());if(photo)photo.remove();project.checkpoints.forEach(p=>L.marker([p.geo.lat,p.geo.lon],{icon:L.divIcon({className:'marker',html:`<b>${p.kind==='base'?'B':p.number}</b>`,iconSize:[34,34]})}).addTo(map).bindTooltip(p.kind==='base'?'Baza':`PK ${p.number}`));if(project.route?.geometry.length)L.geoJSON({type:'Feature',geometry:{type:'LineString',coordinates:project.route.geometry.map(p=>[p.lon,p.lat])},properties:{} } as any,{style:{color:'#e85d04',weight:5}}).addTo(map);renderPhoto();renderCheckpointList();renderRouteSummary();}
-function markBase(geo:LatLng){project.checkpoints=project.checkpoints.filter(p=>p.kind!=='base');project.checkpoints.unshift({id:uid(),number:'',geo,kind:'base'});redraw();}
-function renderCheckpointList(){const el=$('#checkpoint-list');if(!el)return;el.innerHTML=project.checkpoints.filter(p=>p.kind==='checkpoint').map(p=>`<div class="checkpoint"><span class="badge">${p.number}</span><input data-id="${p.id}" value="${p.number}"/><label><input type="radio" name="first" ${selectedFirst===p.id?'checked':''}> pierwszy</label><label><input type="radio" name="last" ${selectedLast===p.id?'checked':''}> ostatni</label><button data-delete="${p.id}" class="icon">×</button></div>`).join('')||'<p class="muted">Nie dodano jeszcze punktów.</p>';el.querySelectorAll('[data-delete]').forEach(b=>b.addEventListener('click',()=>{project.checkpoints=project.checkpoints.filter(p=>p.id!==(b as HTMLElement).dataset.delete);renderControls();redraw();autosave();}));el.querySelectorAll('input[data-id]').forEach(i=>i.addEventListener('change',e=>{const p=project.checkpoints.find(p=>p.id===(e.target as HTMLElement).dataset.id);if(p)p.number=(e.target as HTMLInputElement).value;autosave();}));}
-function renderRouteSummary(){const el=$('#route-summary');if(!el||!project.route)return;if(el)el.innerHTML=`<div class="route-result"><strong>${project.route.order.map(p=>p.kind==='base'?'Baza':`PK ${p.number}`).join(' → ')}</strong><span>${(project.route.totalDistance/1000).toFixed(2)} km · silnik: ${project.route.engine}</span>${project.route.warning?`<p class="warning">⚠ ${project.route.warning}</p>`:''}</div>`;}
-async function calculate(){if(!project.base){alert('Ustaw bazę przed obliczeniem trasy.');return;}const cps=project.checkpoints.filter(p=>p.kind==='checkpoint');if(!cps.length){alert('Dodaj co najmniej jeden PK.');return;}const first=selectedFirst==='auto'?undefined:cps.find(p=>p.id===selectedFirst);const last=selectedLast==='auto'?undefined:cps.find(p=>p.id===selectedLast);project.route=await calculateRoute(project.base,cps,first,last);project.updatedAt=Date.now();redraw();autosave();}
-function openMapy(){if(!project.route||!project.base)return;const pts=project.route.order.filter(p=>p.kind==='checkpoint').map(p=>`${p.geo.lon},${p.geo.lat}`);const chunks=[];for(let i=0;i<pts.length;i+=15)chunks.push(pts.slice(i,i+15));const start=`${project.base.lon},${project.base.lat}`;const u=`https://mapy.com/fnc/v1/route?start=${start}&end=${start}&routeType=foot_hiking&waypoints=${encodeURIComponent(chunks[0]?.join(';')??'')}`;window.open(u,'_blank','noopener');if(pts.length>15)alert('Mapy.com obsługuje maksymalnie 15 punktów pośrednich. Pokazano pierwszą część trasy.');}
-function downloadGpx(){if(!project.route||!project.base)return;const all=project.route.order;const blob=new Blob([gpxFor(project,all,project.route.geometry)],{type:'application/gpx+xml'});const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=`${project.name.replace(/\s+/g,'-')}.gpx`;a.click();URL.revokeObjectURL(a.href);}
-async function openProject(){const ps=await listProjects();if(!ps.length){alert('Brak zapisanych projektów.');return;}project=ps[0];render();}
-async function autosave(){project.updatedAt=Date.now();await saveProject(project);}
-document.addEventListener('change',e=>{const t=e.target as HTMLInputElement;if(t.name!=='first'&&t.name!=='last')return;const row=t.closest('.checkpoint');const id=(row?.querySelector('input[data-id]') as HTMLInputElement)?.dataset.id;if(id){if(t.name==='first')selectedFirst=id;else selectedLast=id;autosave();}});
-document.addEventListener('click',e=>{const target=e.target as HTMLElement;if(target.id==='calibrate'){$('.map-help').textContent='1/4: dotknij charakterystycznego punktu na zdjęciu, potem tego samego miejsca na mapie.';}if(target.id==='base'||target.id==='set-base'){if(!navigator.geolocation)return;navigator.geolocation.getCurrentPosition(pos=>{project.base={lat:pos.coords.latitude,lon:pos.coords.longitude};markBase(project.base);autosave();},()=>alert('Nie udało się pobrać lokalizacji. Możesz ustawić bazę środkiem mapy.'));}},{capture:true});
-function bindPhotoTouch(img:HTMLImageElement){if((img as any).__touchBound)return;(img as any).__touchBound=true;let startDistance=0,startAngle=0,startScale=1,startRotation=0;const distance=(a:Touch,b:Touch)=>Math.hypot(b.clientX-a.clientX,b.clientY-a.clientY);const angle=(a:Touch,b:Touch)=>Math.atan2(b.clientY-a.clientY,b.clientX-a.clientX)*180/Math.PI;img.addEventListener('touchstart',e=>{if(e.touches.length!==2||mode!=='move-photo')return;e.preventDefault();startDistance=distance(e.touches[0],e.touches[1]);startAngle=angle(e.touches[0],e.touches[1]);startScale=project.imageTransform.scale;startRotation=project.imageTransform.rotation},{passive:false});img.addEventListener('touchmove',e=>{if(e.touches.length!==2||mode!=='move-photo')return;e.preventDefault();const d=distance(e.touches[0],e.touches[1]);if(!d||!startDistance)return;project.imageTransform.scale=Math.max(.25,Math.min(4,startScale*d/startDistance));project.imageTransform.rotation=startRotation+angle(e.touches[0],e.touches[1])-startAngle;img.style.transform=`translate(calc(-50% + ${project.imageTransform.x}px),calc(-50% + ${project.imageTransform.y}px)) rotate(${project.imageTransform.rotation}deg) scale(${project.imageTransform.scale})`},{passive:false});img.addEventListener('touchend',e=>{if(e.touches.length<2){startDistance=0;autosave();}});}
-const photoToolsObserver=new MutationObserver(()=>{const layer=document.querySelector('#photo-layer');const image=layer?.querySelector('.photo-interactive') as HTMLImageElement|null;if(!layer||!image||layer.querySelector('#point-photo'))return;bindPhotoTouch(image);const button=document.createElement('button');button.id='point-photo';button.className='photo-tool secondary';button.textContent='＋ Dodaj PK ze zdjęcia';button.style.top='58px';button.onclick=()=>{if(project.controlPoints.length<4){alert('Najpierw dodaj co najmniej 4 punkty kalibracyjne.');return;}mode='point-image';renderPhoto();};layer.append(button);for(const [id,label,delta] of [['rotate-left','↶ Obróć',-5],['rotate-right','↷ Obróć',5]] as [string,string,number][]) {const rotate=document.createElement('button');rotate.id=id;rotate.className='photo-tool secondary';rotate.textContent=label;rotate.style.top=id==='rotate-left'?'104px':'150px';rotate.onclick=()=>{project.imageTransform.rotation+=delta;renderPhoto();autosave();};layer.append(rotate);}});
-photoToolsObserver.observe(document.body,{subtree:true,childList:true});
-if('serviceWorker' in navigator) navigator.serviceWorker.register(`${import.meta.env.BASE_URL}sw.js`).catch(()=>{});
-let layerMode:'overlay'|'photo'|'osm'='overlay';
-function applyLayerMode(){const img=document.querySelector('.photo-interactive') as HTMLImageElement|null;const mapEl=document.querySelector('#map') as HTMLElement|null;if(img){img.style.display=layerMode==='osm'?'none':'';if(layerMode==='photo')img.style.opacity='1';else if(layerMode==='overlay')img.style.opacity=String(project.opacity);}if(mapEl)mapEl.style.opacity=layerMode==='photo'?'0':'1';document.querySelectorAll('.layer-switch button').forEach(b=>b.classList.toggle('active',(b as HTMLElement).dataset.layer===layerMode));}
-const layerSwitchObserver=new MutationObserver(()=>{const card=document.querySelector('#map-controls .card');if(!card||card.querySelector('.layer-switch')){applyLayerMode();return;}const wrap=document.createElement('div');wrap.className='layer-switch';for(const [key,label] of [['osm','OSM'],['overlay','Nakładka'],['photo','Zdjęcie']] as [string,string][]) {const b=document.createElement('button');b.dataset.layer=key;b.textContent=label;b.onclick=()=>{layerMode=key as typeof layerMode;applyLayerMode();};wrap.append(b);}card.insertBefore(wrap,card.querySelector('label')||null);applyLayerMode();});layerSwitchObserver.observe(document.body,{subtree:true,childList:true});
-let pendingGeo:LatLng|undefined;
-render();
-if(navigator.geolocation)setTimeout(()=>navigator.geolocation.getCurrentPosition(pos=>map?.setView([pos.coords.latitude,pos.coords.longitude],15),()=>{},{enableHighAccuracy:true,timeout:8000,maximumAge:300000}),0);
-let photoPinchActive=false;
-document.addEventListener('touchstart',e=>{if(e.touches.length>1)photoPinchActive=true},{capture:true,passive:true});
-document.addEventListener('touchend',e=>{if(e.touches.length<2)photoPinchActive=false},{capture:true,passive:true});
-window.addEventListener('pointerdown',e=>{if(e.pointerType==='touch'&&!e.isPrimary)e.stopImmediatePropagation()},{capture:true});
-window.addEventListener('pointermove',e=>{if(photoPinchActive)e.stopImmediatePropagation()},{capture:true});
-function refreshPhotoPin(){const layer=document.querySelector('#photo-layer') as HTMLElement|null;const img=layer?.querySelector('.photo-interactive') as HTMLImageElement|null;if(!layer||!img)return;let pin=layer.querySelector('.photo-pin') as HTMLElement|null;if(!pendingImage){pin?.remove();return;}if(!pin){pin=document.createElement('div');pin.className='photo-pin';layer.append(pin);}const ir=img.getBoundingClientRect(),lr=layer.getBoundingClientRect();pin.style.left=`${ir.left-lr.left+pendingImage.x/(project.imageWidth||img.naturalWidth||1)*ir.width}px`;pin.style.top=`${ir.top-lr.top+pendingImage.y/(project.imageHeight||img.naturalHeight||1)*ir.height}px`;}
-const photoPinObserver=new MutationObserver(()=>setTimeout(refreshPhotoPin,0));photoPinObserver.observe(document.body,{subtree:true,childList:true});
-const movablePinObserver=new MutationObserver(()=>{const pin=document.querySelector('.photo-pin') as HTMLElement|null;if(!pin||((pin as any).__dragBound))return;(pin as any).__dragBound=true;pin.addEventListener('pointerdown',e=>{if(!pendingImage||mode!=='calibrate-align')return;e.stopPropagation();pin.setPointerCapture(e.pointerId);const move=(m:PointerEvent)=>{const img=document.querySelector('.photo-interactive') as HTMLImageElement|null;if(!img)return;const r=img.getBoundingClientRect();pendingImage={x:Math.max(0,Math.min(project.imageWidth??r.width,(m.clientX-r.left)/r.width*(project.imageWidth??r.width))),y:Math.max(0,Math.min(project.imageHeight??r.height,(m.clientY-r.top)/r.height*(project.imageHeight??r.height)))};refreshPhotoPin();};const up=()=>{pin.releasePointerCapture(e.pointerId);pin.removeEventListener('pointermove',move);pin.removeEventListener('pointerup',up);};pin.addEventListener('pointermove',move);pin.addEventListener('pointerup',up);});});movablePinObserver.observe(document.body,{subtree:true,childList:true});
-document.addEventListener('pointerup',()=>{if(mode==='calibrate-map'&&pendingImage)setTimeout(()=>{mode='calibrate-align';$('.map-help').textContent='Przesuń i przybliż mapę cyfrową, aż właściwe miejsce znajdzie się pod okręgiem. Następnie potwierdź punkt.';renderPhoto();refreshPhotoPin();showLockControl();},0)},{capture:true});
-document.addEventListener('click',e=>{if((e.target as HTMLElement).id==='calibrate')setTimeout(()=>{mode='calibrate';$('.map-help').textContent='1/4: dotknij charakterystycznego punktu na zdjęciu, potem tego samego miejsca na mapie cyfrowej.';renderPhoto();},0)},{capture:true});
+import 'leaflet/dist/leaflet.css';
+import './style.css';
+import L from 'leaflet';
+import type { Checkpoint, ImagePoint, LatLng, Project } from './types';
+import { saveProject, listProjects } from './storage';
+import { homography, imageToGeo } from './math';
+import { calculateRoute } from './services';
+import { gpxFor } from './gpx';
+import { mapyRouteUrl } from './mapy';
+
+type Step = 'map' | 'points' | 'route';
+type Calibration = 'idle' | 'photo' | 'osm' | 'done';
+type Pointer = { x: number; y: number };
+const el = <T extends HTMLElement = HTMLElement>(selector: string) => document.querySelector(selector) as T;
+const id = () => crypto.randomUUID();
+const newProject = (): Project => ({
+  id: id(), name: 'Nowa pętla', createdAt: Date.now(), updatedAt: Date.now(),
+  controlPoints: [], checkpoints: [], opacity: 0.55,
+  imageTransform: { x: 0, y: 0, scale: 1, rotation: 0 }
+});
+let project = newProject();
+let map: L.Map;
+let markers: L.Layer[] = [];
+let step: Step = 'map';
+let calibration: Calibration = 'idle';
+let pendingImage: ImagePoint | undefined;
+let previewPhoto = false;
+let firstId = 'auto';
+let lastId = 'auto';
+let photoMode = false;
+let pointerStart: Pointer | undefined;
+let gestureStart: { distance: number; angle: number; center: Pointer; x: number; y: number; scale: number; rotation: number } | undefined;
+const pointers = new Map<number, Pointer>();
+let moved = false;
+
+function createApp() {
+  el('#app').innerHTML = `
+    <header><div><span class="eyebrow">ERNO HARPAGAN</span><h1>Harpagan Route Planner</h1></div><button id="theme" class="icon" aria-label="Zmień motyw">☾</button></header>
+    <main>
+      <section class="hero">
+        <p>Dodaj zdjęcie mapy, skalibruj je i zaplanuj pieszą trasę.</p>
+        <div class="actions"><button id="new" class="primary">＋ Nowy projekt</button><button id="open" class="secondary">Otwórz zapisany</button></div>
+        <label>Nazwa projektu <input id="project-name" type="text" value="" autocomplete="off"></label>
+        <div class="actions photo-actions">
+          <button id="camera" class="primary">📷 Z aparatu</button><button id="gallery" class="secondary">🖼 Z galerii</button>
+          <input id="camera-input" type="file" accept="image/*" capture="environment" hidden>
+          <input id="gallery-input" type="file" accept="image/*" hidden>
+        </div>
+      </section>
+      <section class="workspace">
+        <nav class="steps"><button data-step="map">1 Mapa</button><button data-step="points">2 Punkty</button><button data-step="route">3 Trasa</button></nav>
+        <div class="map-wrap" id="map-wrap">
+          <div id="map"></div><div id="photo-layer"><img id="photo-image" alt="Zdjęcie mapy"></div>
+          <div id="reticle" aria-hidden="true"><span></span></div>
+          <div id="map-help" role="status"></div>
+          <div id="map-actions"></div>
+        </div>
+        <div class="controls"><div id="map-controls"></div><div id="points-controls" hidden></div><div id="route-controls" hidden></div></div>
+      </section>
+      <footer><small>© OpenStreetMap contributors · Trasy: Valhalla / OSRM / geometria awaryjna</small></footer>
+    </main>`;
+  map = L.map('map', { zoomControl: false }).setView([54.35, 18.65], 11);
+  L.control.zoom({ position: 'bottomright' }).addTo(map);
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    attribution: '© OpenStreetMap contributors', maxZoom: 19
+  }).addTo(map);
+  map.on('click', e => {
+    if (step === 'points' && calibration === 'done' && !photoMode) addCheckpoint({ lat: e.latlng.lat, lon: e.latlng.lng });
+  });
+  const saved = localStorage.getItem('harpagan-theme');
+  if (saved === 'dark') document.body.classList.add('dark');
+  el('#theme').onclick = () => {
+    document.body.classList.toggle('dark');
+    localStorage.setItem('harpagan-theme', document.body.classList.contains('dark') ? 'dark' : 'light');
+  };
+  el('#new').onclick = () => { project = newProject(); resetEditor(); refresh(); save(); };
+  el('#open').onclick = openProject;
+  el('#camera').onclick = () => el<HTMLInputElement>('#camera-input').click();
+  el('#gallery').onclick = () => el<HTMLInputElement>('#gallery-input').click();
+  el<HTMLInputElement>('#camera-input').onchange = e => loadImage((e.target as HTMLInputElement).files?.[0]);
+  el<HTMLInputElement>('#gallery-input').onchange = e => loadImage((e.target as HTMLInputElement).files?.[0]);
+  el<HTMLInputElement>('#project-name').onchange = e => {
+    project.name = (e.target as HTMLInputElement).value.trim() || 'Nowa pętla'; save();
+  };
+  document.querySelectorAll('[data-step]').forEach(button => button.addEventListener('click', () => {
+    step = (button as HTMLElement).dataset.step as Step;
+    refresh();
+  }));
+  const layer = el('#photo-layer');
+  layer.addEventListener('pointerdown', photoPointerDown);
+  layer.addEventListener('pointermove', photoPointerMove);
+  layer.addEventListener('pointerup', photoPointerUp);
+  layer.addEventListener('pointercancel', photoPointerUp);
+  layer.addEventListener('wheel', e => {
+    if (!canMovePhoto()) return;
+    e.preventDefault();
+    project.imageTransform.scale = clamp(project.imageTransform.scale * Math.exp(-e.deltaY * 0.001), 0.2, 8);
+    positionPhoto(); save();
+  }, { passive: false });
+  if (navigator.geolocation) navigator.geolocation.getCurrentPosition(
+    p => map.setView([p.coords.latitude, p.coords.longitude], 15),
+    () => {}, { enableHighAccuracy: true, timeout: 8000, maximumAge: 300000 }
+  );
+  refresh();
+}
+
+function resetEditor() {
+  step = 'map'; calibration = 'idle'; pendingImage = undefined;
+  previewPhoto = false; photoMode = false; firstId = 'auto'; lastId = 'auto';
+}
+
+function refresh() {
+  el<HTMLInputElement>('#project-name').value = project.name;
+  document.querySelectorAll('[data-step]').forEach(button =>
+    button.classList.toggle('active', (button as HTMLElement).dataset.step === step));
+  el('#map-controls').hidden = step !== 'map';
+  el('#points-controls').hidden = step !== 'points';
+  el('#route-controls').hidden = step !== 'route';
+  renderMapControls();
+  renderPointControls();
+  renderRouteControls();
+  renderLayers();
+  drawMarkers();
+}
+
+function renderMapControls() {
+  const count = project.controlPoints.length;
+  const status = calibration === 'done' ? 'Kalibracja zakończona' :
+    count < 4 ? `${count} z minimum 4 par punktów` : `${count} par punktów — możesz zakończyć`;
+  el('#map-controls').innerHTML = `
+    <div class="card">
+      <h2>Dopasuj mapę</h2>
+      <p class="muted">Przesuwaj całą warstwę pod stałym celownikiem. Wybierz charakterystyczne miejsca rozłożone po całym zdjęciu.</p>
+      <p class="status">${status}</p>
+      <div class="button-row"><button id="start-calibration" class="primary">${calibration === 'idle' ? 'Rozpocznij kalibrację' : 'Kalibruj dalej'}</button>
+      <button id="undo-calibration" class="secondary" ${count ? '' : 'disabled'}>Cofnij ostatni punkt</button>
+      <button id="reset-calibration" class="ghost">Wyczyść kalibrację</button></div>
+    </div>`;
+  el<HTMLButtonElement>('#start-calibration').onclick = () => {
+    if (!project.image) { alert('Najpierw dodaj zdjęcie mapy.'); return; }
+    calibration = 'photo'; previewPhoto = false; step = 'map'; refresh();
+  };
+  el<HTMLButtonElement>('#undo-calibration').onclick = () => {
+    project.controlPoints.pop(); project.route = undefined;
+    calibration = 'photo'; pendingImage = undefined; previewPhoto = false; refresh(); save();
+  };
+  el<HTMLButtonElement>('#reset-calibration').onclick = () => {
+    project.controlPoints = []; project.route = undefined;
+    pendingImage = undefined; calibration = project.image ? 'photo' : 'idle';
+    previewPhoto = false; refresh(); save();
+  };
+}
+
+function renderLayers() {
+  const hasPhoto = Boolean(project.image);
+  const photoStage = step === 'map' && calibration === 'photo';
+  const osmStage = step === 'map' && calibration === 'osm';
+  const photoVisible = hasPhoto && ((step === 'map' && calibration === 'idle') || photoStage || (osmStage && previewPhoto) || (step === 'points' && photoMode));
+  const photoInteractive = photoStage || (step === 'points' && photoMode);
+  const img = el<HTMLImageElement>('#photo-image');
+  if (project.image && img.src !== project.image) img.src = project.image;
+  img.style.display = photoVisible ? 'block' : 'none';
+  const layer = el('#photo-layer');
+  layer.style.display = photoVisible ? 'block' : 'none';
+  layer.style.pointerEvents = photoInteractive ? 'auto' : 'none';
+  el('#map').style.visibility = photoVisible ? 'hidden' : 'visible';
+  const reticle = el('#reticle');
+  reticle.hidden = !photoStage && !osmStage;
+  const mapInput = !photoVisible && !photoStage;
+  map.dragging[mapInput ? 'enable' : 'disable']();
+  map.touchZoom[mapInput ? 'enable' : 'disable']();
+  map.doubleClickZoom[mapInput ? 'enable' : 'disable']();
+  positionPhoto();
+  renderMapActions();
+  const help = el('#map-help');
+  help.textContent = photoStage
+    ? 'Przesuń i powiększ zdjęcie. Ustaw wybrane miejsce pod celownikiem.'
+    : osmStage && previewPhoto
+      ? 'Podgląd zdjęcia. Wróć do OSM, aby ustawić odpowiadające miejsce.'
+      : osmStage
+        ? 'Przesuń i powiększ OSM. Ustaw to samo miejsce pod celownikiem.'
+        : step === 'points' && photoMode
+          ? 'Dotknij punktu na zdjęciu, aby dodać PK.'
+          : step === 'points' ? 'Dotknij mapy, aby dodać PK.' : '';
+  help.hidden = !help.textContent;
+  if (mapInput) setTimeout(() => map.invalidateSize(), 0);
+}
+
+function renderMapActions() {
+  const area = el('#map-actions');
+  area.innerHTML = '';
+  const button = (label: string, action: () => void, secondary = false) => {
+    const b = document.createElement('button');
+    b.className = secondary ? 'secondary' : 'primary';
+    b.textContent = label; b.onclick = action; area.append(b); return b;
+  };
+  if (step !== 'map' || !project.image) return;
+  if (calibration === 'idle' || calibration === 'done') {
+    button('Obróć zdjęcie ↶', () => rotate(-5), true);
+    button('Obróć zdjęcie ↷', () => rotate(5), true);
+    button('Rozpocznij kalibrację', () => { calibration = 'photo'; refresh(); });
+    return;
+  }
+  if (calibration === 'photo') {
+    button('↶ 5°', () => rotate(-5), true);
+    button('↷ 5°', () => rotate(5), true);
+    button('Zablokuj punkt na zdjęciu', () => {
+      const point = imageAtScreenCenter();
+      if (!point) { alert('Ustaw zdjęcie pod celownikiem.'); return; }
+      pendingImage = point;
+      calibration = 'osm'; previewPhoto = false; refresh();
+    });
+  } else if (calibration === 'osm') {
+    button(previewPhoto ? 'Wróć do OSM' : 'Pokaż zdjęcie', () => {
+      previewPhoto = !previewPhoto; renderLayers();
+    }, true);
+    button('Wróć do zdjęcia', () => { calibration = 'photo'; previewPhoto = false; refresh(); }, true);
+    if (!previewPhoto) button('Potwierdź punkt na OSM', () => {
+      if (!pendingImage) return;
+      const geo = map.getCenter();
+      project.controlPoints.push({ image: pendingImage, geo: { lat: geo.lat, lon: geo.lng } });
+      pendingImage = undefined; calibration = 'photo'; previewPhoto = false;
+      refresh(); save();
+    });
+  }
+  if (project.controlPoints.length >= 4 && calibration === 'photo')
+    button('Zakończ kalibrację', finishCalibration, true);
+}
+
+function finishCalibration() {
+  try { homography(project.controlPoints); }
+  catch { alert('Punkty są zbyt blisko siebie lub w jednej linii. Dodaj punkty w innych częściach mapy.'); return; }
+  calibration = 'done'; step = 'points'; photoMode = true; refresh(); save();
+}
+
+function rotate(degrees: number) {
+  project.imageTransform.rotation += degrees;
+  positionPhoto(); save();
+}
+
+function positionPhoto() {
+  const img = el<HTMLImageElement>('#photo-image');
+  const t = project.imageTransform;
+  img.style.transform = `translate(-50%, -50%) translate(${t.x}px, ${t.y}px) rotate(${t.rotation}deg) scale(${t.scale})`;
+}
+
+function canMovePhoto() { return calibration === 'photo' && step === 'map'; }
+function clamp(v: number, min: number, max: number) { return Math.max(min, Math.min(max, v)); }
+function measureGesture() {
+  const [a, b] = [...pointers.values()];
+  return {
+    distance: Math.hypot(b.x - a.x, b.y - a.y),
+    angle: Math.atan2(b.y - a.y, b.x - a.x),
+    center: { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 }
+  };
+}
+function photoPointerDown(e: PointerEvent) {
+  if (!canMovePhoto() && !(step === 'points' && photoMode)) return;
+  e.preventDefault();
+  el('#photo-layer').setPointerCapture(e.pointerId);
+  pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+  if (pointers.size === 1) { pointerStart = { x: e.clientX, y: e.clientY }; moved = false; gestureStart = undefined; }
+  if (pointers.size === 2 && canMovePhoto()) {
+    const g = measureGesture(), t = project.imageTransform;
+    gestureStart = { ...g, x: t.x, y: t.y, scale: t.scale, rotation: t.rotation };
+    pointerStart = undefined; moved = true;
+  }
+}
+function photoPointerMove(e: PointerEvent) {
+  const old = pointers.get(e.pointerId);
+  if (!old) return;
+  e.preventDefault();
+  pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+  if (!canMovePhoto()) return;
+  const t = project.imageTransform;
+  if (pointers.size === 2 && gestureStart) {
+    const g = measureGesture();
+    const scale = clamp(gestureStart.scale * g.distance / Math.max(gestureStart.distance, 1), 0.2, 8);
+    t.scale = scale;
+    t.rotation = gestureStart.rotation + (g.angle - gestureStart.angle) * 180 / Math.PI;
+    t.x = gestureStart.x + g.center.x - gestureStart.center.x;
+    t.y = gestureStart.y + g.center.y - gestureStart.center.y;
+  } else if (pointers.size === 1) {
+    t.x += e.clientX - old.x; t.y += e.clientY - old.y;
+  }
+  if (pointerStart && Math.hypot(e.clientX - pointerStart.x, e.clientY - pointerStart.y) > 6) moved = true;
+  positionPhoto();
+}
+function photoPointerUp(e: PointerEvent) {
+  if (!pointers.has(e.pointerId)) return;
+  const wasTap = !moved && pointers.size === 1;
+  pointers.delete(e.pointerId);
+  if (pointers.size === 1) { gestureStart = undefined; pointerStart = [...pointers.values()][0]; }
+  if (!pointers.size) { gestureStart = undefined; pointerStart = undefined; save(); }
+  if (wasTap && step === 'points' && photoMode && calibration === 'done') {
+    try {
+      const p = imageAtScreen({ x: e.clientX, y: e.clientY });
+      if (p) addCheckpoint(imageToGeo(p, homography(project.controlPoints)));
+    } catch { alert('Kalibracja jest nieprawidłowa. Spróbuj dodać inne punkty kalibracyjne.'); }
+  }
+}
+
+function imageAtScreenCenter(): ImagePoint | undefined {
+  const rect = el('#map-wrap').getBoundingClientRect();
+  return imageAtScreen({ x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 });
+}
+function imageAtScreen(screen: Pointer): ImagePoint | undefined {
+  const img = el<HTMLImageElement>('#photo-image');
+  const rect = el('#map-wrap').getBoundingClientRect();
+  const t = project.imageTransform;
+  const dx = screen.x - (rect.left + rect.width / 2 + t.x);
+  const dy = screen.y - (rect.top + rect.height / 2 + t.y);
+  const angle = -t.rotation * Math.PI / 180;
+  const x = (Math.cos(angle) * dx - Math.sin(angle) * dy) / t.scale + img.offsetWidth / 2;
+  const y = (Math.sin(angle) * dx + Math.cos(angle) * dy) / t.scale + img.offsetHeight / 2;
+  if (x < 0 || y < 0 || x > img.offsetWidth || y > img.offsetHeight) return;
+  return { x: x / img.offsetWidth * (project.imageWidth ?? img.naturalWidth),
+    y: y / img.offsetHeight * (project.imageHeight ?? img.naturalHeight) };
+}
+
+async function loadImage(file?: File) {
+  if (!file) return;
+  if (!file.type.startsWith('image/')) { alert('Wybierz plik obrazu.'); return; }
+  try {
+    const bitmap = await createImageBitmap(file, { imageOrientation: 'from-image' });
+    const max = 2400, ratio = Math.min(1, max / Math.max(bitmap.width, bitmap.height));
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.round(bitmap.width * ratio); canvas.height = Math.round(bitmap.height * ratio);
+    const context = canvas.getContext('2d');
+    if (!context) throw Error('Brak obsługi Canvas');
+    context.drawImage(bitmap, 0, 0, canvas.width, canvas.height); bitmap.close();
+    project.image = canvas.toDataURL('image/jpeg', 0.85);
+    project.imageWidth = canvas.width; project.imageHeight = canvas.height;
+    project.imageTransform = { x: 0, y: 0, scale: 1, rotation: 0 };
+    project.controlPoints = []; project.route = undefined;
+    calibration = 'idle'; pendingImage = undefined; step = 'map';
+    refresh(); save();
+  } catch {
+    alert('Nie można odczytać zdjęcia. Wybierz inny plik JPG lub PNG.');
+  }
+}
+
+function addCheckpoint(geo: LatLng) {
+  const number = String(project.checkpoints.filter(p => p.kind === 'checkpoint').length + 1);
+  project.checkpoints.push({ id: id(), number, geo, kind: 'checkpoint' });
+  project.route = undefined; refresh(); save();
+}
+function setBase() {
+  const use = (geo: LatLng) => {
+    project.base = geo;
+    project.checkpoints = project.checkpoints.filter(p => p.kind !== 'base');
+    project.checkpoints.unshift({ id: id(), number: '', geo, kind: 'base' });
+    refresh(); save();
+  };
+  if (!navigator.geolocation) { const p = map.getCenter(); use({ lat: p.lat, lon: p.lng }); return; }
+  navigator.geolocation.getCurrentPosition(
+    p => use({ lat: p.coords.latitude, lon: p.coords.longitude }),
+    () => { const p = map.getCenter(); use({ lat: p.lat, lon: p.lng }); alert('GPS niedostępny. Bazę ustawiono w środku mapy.'); },
+    { enableHighAccuracy: true, timeout: 8000, maximumAge: 300000 }
+  );
+}
+function renderPointControls() {
+  const cps = project.checkpoints.filter(p => p.kind === 'checkpoint');
+  el('#points-controls').innerHTML = `
+    <div class="card"><h2>Punkty kontrolne</h2>
+      <p class="muted">Widok: ${photoMode ? 'zdjęcie' : 'OSM'}. Dotknij miejsca, aby dodać PK.</p>
+      <div class="button-row"><button id="points-view" class="secondary">${photoMode ? 'Pokaż OSM' : 'Pokaż zdjęcie'}</button>
+      <button id="set-base" class="primary">Tu jest baza (GPS)</button></div>
+      <div id="checkpoint-list"></div></div>`;
+  el<HTMLButtonElement>('#points-view').onclick = () => { photoMode = !photoMode; refresh(); };
+  el<HTMLButtonElement>('#set-base').onclick = setBase;
+  const list = el('#checkpoint-list');
+  if (!cps.length) { list.innerHTML = '<p class="muted">Nie dodano jeszcze PK.</p>'; return; }
+  cps.forEach(p => {
+    const row = document.createElement('div'); row.className = 'checkpoint';
+    const badge = document.createElement('span'); badge.className = 'badge'; badge.textContent = p.number;
+    const input = document.createElement('input'); input.type = 'text'; input.value = p.number; input.setAttribute('aria-label', 'Numer PK');
+    input.onchange = () => { p.number = input.value.trim() || p.number; project.route = undefined; refresh(); save(); };
+    const first = document.createElement('label'), firstRadio = document.createElement('input');
+    firstRadio.type = 'radio'; firstRadio.name = 'first'; firstRadio.checked = firstId === p.id;
+    firstRadio.onchange = () => { firstId = p.id; project.route = undefined; save(); };
+    first.append(firstRadio, ' pierwszy');
+    const last = document.createElement('label'), lastRadio = document.createElement('input');
+    lastRadio.type = 'radio'; lastRadio.name = 'last'; lastRadio.checked = lastId === p.id;
+    lastRadio.onchange = () => { lastId = p.id; project.route = undefined; save(); };
+    last.append(lastRadio, ' ostatni');
+    const del = document.createElement('button'); del.className = 'icon'; del.textContent = '×'; del.setAttribute('aria-label', 'Usuń PK');
+    del.onclick = () => { project.checkpoints = project.checkpoints.filter(q => q.id !== p.id); project.route = undefined; refresh(); save(); };
+    row.append(badge, input, first, last, del); list.append(row);
+  });
+}
+
+function renderRouteControls() {
+  el('#route-controls').innerHTML = `
+    <div class="card"><h2>Planowanie trasy</h2>
+      <p class="muted">Baza → pierwszy PK → pozostałe → ostatni PK → baza</p>
+      <div class="button-row"><button id="calculate" class="primary">Oblicz trasę</button>
+      <button id="gpx" class="secondary">Pobierz GPX</button>
+      <button id="mapy" class="secondary">Otwórz Mapy.com</button></div>
+      <div id="route-summary"></div></div>`;
+  el<HTMLButtonElement>('#calculate').onclick = calculate;
+  el<HTMLButtonElement>('#gpx').onclick = downloadGpx;
+  el<HTMLButtonElement>('#mapy').onclick = openMapy;
+  const route = project.route;
+  if (!route) return;
+  const box = el('#route-summary');
+  box.className = 'route-result';
+  const order = document.createElement('strong');
+  order.textContent = route.order.map(p => p.kind === 'base' ? 'Baza' : `PK ${p.number}`).join(' → ');
+  const summary = document.createElement('span');
+  summary.textContent = `${(route.totalDistance / 1000).toFixed(2)} km · silnik: ${route.engine}`;
+  box.append(order, summary);
+  if (route.warning) { const warning = document.createElement('p'); warning.className = 'warning'; warning.textContent = route.warning; box.append(warning); }
+}
+async function calculate() {
+  if (!project.base) { alert('Ustaw bazę przed obliczeniem trasy.'); return; }
+  const cps = project.checkpoints.filter(p => p.kind === 'checkpoint');
+  if (!cps.length) { alert('Dodaj przynajmniej jeden PK.'); return; }
+  const button = el<HTMLButtonElement>('#calculate');
+  button.disabled = true; button.textContent = 'Obliczanie…';
+  try {
+    project.route = await calculateRoute(project.base, cps, cps.find(p => p.id === firstId), cps.find(p => p.id === lastId));
+    refresh(); save();
+  } catch { alert('Nie udało się obliczyć trasy. Spróbuj ponownie.'); button.disabled = false; button.textContent = 'Oblicz trasę'; }
+}
+function downloadGpx() {
+  if (!project.route || !project.base) { alert('Najpierw oblicz trasę.'); return; }
+  const blob = new Blob([gpxFor(project, project.route.order, project.route.geometry)], { type: 'application/gpx+xml' });
+  const url = URL.createObjectURL(blob), a = document.createElement('a');
+  a.href = url; a.download = `${project.name.replace(/[^a-zA-Z0-9ąćęłńóśźż_-]+/gi, '-')}.gpx`;
+  a.click(); setTimeout(() => URL.revokeObjectURL(url), 30000);
+}
+function openMapy() {
+  if (!project.route || !project.base) { alert('Najpierw oblicz trasę.'); return; }
+  const points = project.route.order.filter(p => p.kind === 'checkpoint');
+  if (points.length > 15) alert('Mapy.com ma limit punktów pośrednich. Otwarta zostanie pierwsza część trasy.');
+  window.open(mapyRouteUrl(project.base, points.slice(0, 15)), '_blank', 'noopener');
+}
+function drawMarkers() {
+  markers.forEach(m => m.remove()); markers = [];
+  project.checkpoints.forEach(p => {
+    const marker = L.marker([p.geo.lat, p.geo.lon], {
+      icon: L.divIcon({ className: 'marker', html: `<b>${p.kind === 'base' ? 'B' : p.number.replace(/[&<>"']/g, '')}</b>`, iconSize: [34, 34] })
+    }).addTo(map);
+    markers.push(marker);
+  });
+  if (project.route?.geometry.length) {
+    const line = L.polyline(project.route.geometry.map(p => [p.lat, p.lon]), { color: '#e85d04', weight: 5 }).addTo(map);
+    markers.push(line);
+  }
+}
+async function openProject() {
+  const projects = await listProjects();
+  if (!projects.length) { alert('Brak zapisanych projektów.'); return; }
+  const names = projects.map((p, i) => `${i + 1}. ${p.name}`).join('\n');
+  const choice = projects.length === 1 ? '1' : prompt(`Wybierz numer projektu:\n${names}`);
+  const chosen = projects[Number(choice) - 1];
+  if (!chosen) return;
+  project = chosen; resetEditor();
+  calibration = project.controlPoints.length >= 4 ? 'done' : 'idle';
+  refresh();
+}
+function save() { project.updatedAt = Date.now(); void saveProject(project).catch(() => alert('Nie udało się zapisać projektu. Sprawdź wolne miejsce w telefonie.')); }
+
+if ('serviceWorker' in navigator)
+  navigator.serviceWorker.register(`${import.meta.env.BASE_URL}sw.js`).catch(() => {});
+createApp();
