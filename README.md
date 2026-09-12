@@ -13,6 +13,8 @@ Testy: `npm test`, build produkcyjny: `npm run build`.
 
 Projekt zapisuje się automatycznie w IndexedDB. Routing korzysta z publicznego Valhalla; przy niedostępności pokazuje bezpieczny fallback geometryczny. Dane map i zdjęcia nie są wysyłane do aplikacji; do usług trasowania trafiają wyłącznie współrzędne.
 
+Zdjęcie można dodać z aparatu albo wybrać istniejący plik z galerii. Po dodaniu wybierz „Przesuń / skaluj zdjęcie”, aby przeciągać warstwę jednym palcem lub skalować ją kółkiem myszy. Kalibrację rozpoczyna przycisk „Dodaj punkt kalibracyjny”: wskaż punkt na zdjęciu, a następnie odpowiadające mu miejsce na mapie cyfrowej; wykonaj to co najmniej cztery razy. Po kalibracji tryb „Punkty” pozwala dodawać PK ze zdjęcia.
+
 ## GitHub Pages
 
 Workflow wdrażający aplikację znajduje się w `.github/workflows/deploy.yml`. W repozytorium GitHub wybierz Settings → Pages → GitHub Actions. Aplikacja używa bazowej ścieżki `/harpagan-planner/`.
