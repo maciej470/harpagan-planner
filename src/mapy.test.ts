@@ -1,3 +1,4 @@
-import {describe,it,expect} from 'vitest'; import {mapyRouteUrl,mapyRouteUrlForOrder} from './mapy';
+import {describe,it,expect} from 'vitest'; import {mapyPointUrl,mapyRouteUrl,mapyRouteUrlForOrder} from './mapy';
 describe('Mapy.com',()=>it('tworzy link pętli pieszej z punktami',()=>{const u=mapyRouteUrl({lat:54,lon:18},[{id:'1',number:'7',geo:{lat:54.1,lon:18.1},kind:'checkpoint'}],true);expect(u).toContain('routeType=foot_hiking');expect(u).toContain('navigate=true');expect(u).toContain('waypoints=18.1%2C54.1');}));
 it('używa faktycznego początku i końca trasy otwartej',()=>{const points=[{id:'1',number:'1',geo:{lat:54,lon:18},kind:'checkpoint' as const},{id:'2',number:'2',geo:{lat:55,lon:19},kind:'checkpoint' as const}];const url=new URL(mapyRouteUrlForOrder(points));expect(url.searchParams.get('start')).toBe('18,54');expect(url.searchParams.get('end')).toBe('19,55');});
+it('tworzy link do pojedynczego punktu',()=>{const url=new URL(mapyPointUrl({lat:54.1,lon:18.2}));expect(url.searchParams.get('x')).toBe('18.2');expect(url.searchParams.get('y')).toBe('54.1');expect(url.searchParams.get('z')).toBe('17');});

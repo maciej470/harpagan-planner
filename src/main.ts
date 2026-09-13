@@ -3,15 +3,15 @@ import './style.css';
 import L from 'leaflet';
 import type { Checkpoint, ImagePoint, LatLng, Project } from './types';
 import { saveProject, listProjects } from './storage';
-import { homography, imageToGeo } from './math';
+import { geoToImage, homography, imageToGeo } from './math';
 import { calculateRoute, calculateRouteForOrder } from './services';
 import { gpxFor } from './gpx';
-import { mapyRouteUrlForOrder } from './mapy';
+import { mapyPointUrl, mapyRouteUrlForOrder } from './mapy';
 import { constrainPhotoTranslation } from './photoTransform';
 import { alternativeOrders } from './variants';
 
 type Step = 'map' | 'points' | 'route';
-type Calibration = 'idle' | 'photo' | 'osm' | 'done';
+type Calibration = 'idle' | 'photo' | 'osm' | 'review' | 'done';
 type Pointer = { x: number; y: number };
 const el = <T extends HTMLElement = HTMLElement>(selector: string) => document.querySelector(selector) as T;
 const id = () => crypto.randomUUID();
@@ -28,6 +28,9 @@ let calibration: Calibration = 'idle';
 let pendingImage: ImagePoint | undefined;
 let previewPhoto = false;
 let photoMode = false;
+let editingControlIndex: number | undefined;
+let selectedControlIndex: number | undefined;
+let editingCheckpointId: string | undefined;
 let pointerStart: Pointer | undefined;
 let gestureStart: { distance: number; angle: number; center: Pointer; x: number; y: number; scale: number; rotation: number } | undefined;
 const pointers = new Map<number, Pointer>();
@@ -50,7 +53,7 @@ function createApp() {
       <section class="workspace">
         <nav class="steps"><button data-step="map">1 Mapa</button><button data-step="points">2 Punkty</button><button data-step="route">3 Trasa</button></nav>
         <div class="map-wrap" id="map-wrap">
-          <div id="map"></div><div id="photo-layer"><img id="photo-image" alt="Zdjęcie mapy"></div>
+          <div id="map"></div><canvas id="calibration-overlay" aria-hidden="true"></canvas><div id="photo-layer"><img id="photo-image" alt="Zdjęcie mapy"></div>
           <div id="reticle" aria-hidden="true"><span></span></div>
           <div id="map-help" role="status"></div>
         </div>
@@ -64,6 +67,7 @@ function createApp() {
   L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
     attribution: '© OpenStreetMap contributors', maxZoom: 19
   }).addTo(map);
+  map.on('move zoom resize', () => { if (calibration === 'review') drawCalibrationOverlay(); });
   const saved = localStorage.getItem('harpagan-theme');
   if (saved === 'dark') document.body.classList.add('dark');
   el('#theme').onclick = () => {
@@ -105,6 +109,7 @@ function createApp() {
 function resetEditor() {
   step = 'map'; calibration = 'idle'; pendingImage = undefined;
   previewPhoto = false; photoMode = false;
+  editingControlIndex = undefined; selectedControlIndex = undefined; editingCheckpointId = undefined;
 }
 
 function refresh() {
@@ -130,29 +135,51 @@ function renderMapControls() {
       <h2>Dopasuj mapę</h2>
       <p class="muted">Przesuwaj całą warstwę pod stałym celownikiem. Wybierz charakterystyczne miejsca rozłożone po całym zdjęciu.</p>
       <p class="status">${status}</p>
+      <div id="calibration-list" class="calibration-list"></div>
       <div class="button-row"><button id="start-calibration" class="primary">${calibration === 'idle' ? 'Rozpocznij kalibrację' : 'Kalibruj dalej'}</button>
+      <button id="review-calibration" class="secondary" ${count >= 4 ? '' : 'disabled'}>Sprawdź kalibrację</button>
       <button id="undo-calibration" class="secondary" ${count ? '' : 'disabled'}>Cofnij ostatni punkt</button>
       <button id="reset-calibration" class="ghost">Wyczyść kalibrację</button></div>
     </div>`;
   el<HTMLButtonElement>('#start-calibration').onclick = () => {
     if (!project.image) { alert('Najpierw dodaj zdjęcie mapy.'); return; }
+    editingControlIndex = undefined; selectedControlIndex = undefined;
     calibration = 'photo'; previewPhoto = false; step = 'map'; refresh();
   };
+  el<HTMLButtonElement>('#review-calibration').onclick = showCalibrationReview;
   el<HTMLButtonElement>('#undo-calibration').onclick = () => {
     project.controlPoints.pop(); invalidateRoute();
     calibration = 'photo'; pendingImage = undefined; previewPhoto = false; refresh(); save();
   };
   el<HTMLButtonElement>('#reset-calibration').onclick = () => {
     project.controlPoints = []; invalidateRoute();
+    editingControlIndex = undefined; selectedControlIndex = undefined;
     pendingImage = undefined; calibration = project.image ? 'photo' : 'idle';
     previewPhoto = false; refresh(); save();
   };
+  const list = el('#calibration-list');
+  project.controlPoints.forEach((point, index) => {
+    const row = document.createElement('button');
+    row.className = 'calibration-point'; row.classList.toggle('selected', selectedControlIndex === index);
+    row.innerHTML = `<span>${index + 1}</span><strong>Punkt ${index + 1}</strong><small>${point.geo.lat.toFixed(5)}, ${point.geo.lon.toFixed(5)}</small><em>Popraw</em>`;
+    row.onclick = () => { selectedControlIndex = index; editingControlIndex = index; pendingImage = undefined; calibration = 'photo'; previewPhoto = false; refresh(); };
+    list.append(row);
+  });
+}
+
+function showCalibrationReview() {
+  try { homography(project.controlPoints); }
+  catch { alert('Punkty są zbyt blisko siebie lub w jednej linii. Popraw ich rozmieszczenie.'); return; }
+  calibration = 'review'; previewPhoto = false; refresh();
+  const bounds = L.latLngBounds(project.controlPoints.map(point => [point.geo.lat, point.geo.lon]));
+  map.fitBounds(bounds, { padding: [45, 45] });
 }
 
 function renderLayers() {
   const hasPhoto = Boolean(project.image);
   const photoStage = step === 'map' && calibration === 'photo';
   const osmStage = step === 'map' && calibration === 'osm';
+  const reviewStage = step === 'map' && calibration === 'review';
   const photoVisible = hasPhoto && ((step === 'map' && calibration === 'idle') || photoStage || (osmStage && previewPhoto) || (step === 'points' && photoMode));
   const photoInteractive = photoStage || (step === 'points' && photoMode);
   const img = el<HTMLImageElement>('#photo-image');
@@ -162,6 +189,8 @@ function renderLayers() {
   layer.style.display = photoVisible ? 'block' : 'none';
   layer.style.pointerEvents = photoInteractive ? 'auto' : 'none';
   el('#map').style.visibility = photoVisible ? 'hidden' : 'visible';
+  const overlay = el<HTMLCanvasElement>('#calibration-overlay');
+  overlay.hidden = !reviewStage;
   const reticle = el('#reticle');
   reticle.hidden = !photoStage && !osmStage && step !== 'points';
   const mapInput = !photoVisible && !photoStage;
@@ -169,6 +198,7 @@ function renderLayers() {
   map.touchZoom[mapInput ? 'enable' : 'disable']();
   map.doubleClickZoom[mapInput ? 'enable' : 'disable']();
   positionPhoto();
+  if (reviewStage) setTimeout(drawCalibrationOverlay, 0);
   renderMapActions();
   const help = el('#map-help');
   help.textContent = photoStage
@@ -177,6 +207,7 @@ function renderLayers() {
       ? 'Podgląd zdjęcia. Wróć do OSM, aby ustawić odpowiadające miejsce.'
       : osmStage
         ? 'Przesuń i powiększ OSM. Ustaw to samo miejsce pod celownikiem.'
+        : reviewStage ? 'Przesuwaj mapę i zmieniaj krycie zdjęcia. Numery wskazują użyte punkty kalibracyjne.'
         : step === 'points' && photoMode
           ? 'Ustaw miejsce na zdjęciu pod celownikiem i użyj przycisku na dole.'
           : step === 'points' ? 'Przesuń OSM pod celownikiem, aby dodać nazwany punkt.' : '';
@@ -194,8 +225,9 @@ function renderMapActions() {
   };
   if (step === 'points' && !photoMode) {
     button(project.image ? 'Pokaż zdjęcie' : 'Brak zdjęcia', () => { if (project.image) { photoMode = true; refresh(); } }, true);
-    button('Dodaj PK tutaj', () => {
-      const center = map.getCenter(); addCheckpoint({ lat: center.lat, lon: center.lng });
+    button(editingCheckpointId ? 'Zapisz pozycję PK' : 'Dodaj PK tutaj', () => {
+      const center = map.getCenter(), geo = { lat: center.lat, lon: center.lng };
+      if (editingCheckpointId) updateCheckpointPosition(geo, imageForGeo(geo)); else addCheckpoint(geo, imageForGeo(geo));
     });
     return;
   }
@@ -208,17 +240,29 @@ function renderMapActions() {
       const last = checkpoints.at(-1);
       if (!last) return;
       project.checkpoints = project.checkpoints.filter(p => p.id !== last.id);
+      if (editingCheckpointId === last.id) editingCheckpointId = undefined;
       invalidateRoute(); refresh(); save();
     }, true);
-    button('Dodaj PK tutaj', () => {
+    button(editingCheckpointId ? 'Zapisz pozycję PK' : 'Dodaj PK tutaj', () => {
       const image = imageAtScreenCenter();
       if (!image) { alert('Ustaw zdjęcie pod celownikiem.'); return; }
-      try { addCheckpoint(imageToGeo(image, homography(project.controlPoints)), image); }
+      try {
+        const geo = imageToGeo(image, homography(project.controlPoints));
+        if (editingCheckpointId) updateCheckpointPosition(geo, image); else addCheckpoint(geo, image);
+      }
       catch { alert('Kalibracja jest nieprawidłowa. Wróć do kroku Mapa i popraw punkty.'); }
     });
     return;
   }
   if (step !== 'map') return;
+  if (calibration === 'review') {
+    const label = document.createElement('label'); label.className = 'opacity-control'; label.innerHTML = `Zdjęcie <input id="overlay-opacity" type="range" min="0" max="1" step="0.05" value="${project.opacity}"> OSM`;
+    area.append(label);
+    el<HTMLInputElement>('#overlay-opacity').oninput = event => { project.opacity = Number((event.target as HTMLInputElement).value); drawCalibrationOverlay(); save(); };
+    button('Popraw punkty', () => { calibration = 'photo'; refresh(); }, true);
+    button('Kalibracja jest OK', finishCalibration);
+    return;
+  }
   if (calibration === 'idle') {
     button('Obróć zdjęcie ↶', () => rotate(-5), true);
     button('Obróć zdjęcie ↷', () => rotate(5), true);
@@ -246,19 +290,54 @@ function renderMapActions() {
     if (!previewPhoto) button('Potwierdź punkt na OSM', () => {
       if (!pendingImage) return;
       const geo = map.getCenter();
-      project.controlPoints.push({ image: pendingImage, geo: { lat: geo.lat, lon: geo.lng } });
+      const pair = { image: pendingImage, geo: { lat: geo.lat, lon: geo.lng } };
+      if (editingControlIndex === undefined) project.controlPoints.push(pair);
+      else project.controlPoints[editingControlIndex] = pair;
+      selectedControlIndex = editingControlIndex ?? project.controlPoints.length - 1;
+      editingControlIndex = undefined;
       pendingImage = undefined; calibration = 'photo'; previewPhoto = false;
       refresh(); save();
     });
   }
   if (project.controlPoints.length >= 4 && calibration === 'photo')
-    button('Zakończ kalibrację', finishCalibration, true);
+    button('Sprawdź kalibrację', showCalibrationReview, true);
 }
 
 function finishCalibration() {
   try { homography(project.controlPoints); }
   catch { alert('Punkty są zbyt blisko siebie lub w jednej linii. Dodaj punkty w innych częściach mapy.'); return; }
+  editingControlIndex = undefined; selectedControlIndex = undefined;
   calibration = 'done'; step = 'points'; photoMode = true; refresh(); save();
+}
+
+function drawCalibrationOverlay() {
+  const canvas = el<HTMLCanvasElement>('#calibration-overlay'), img = el<HTMLImageElement>('#photo-image');
+  if (canvas.hidden || !img.naturalWidth || project.controlPoints.length < 4) return;
+  const rect = el('#map-wrap').getBoundingClientRect(), ratio = window.devicePixelRatio || 1;
+  canvas.width = Math.round(rect.width * ratio); canvas.height = Math.round(rect.height * ratio);
+  canvas.style.width = `${rect.width}px`; canvas.style.height = `${rect.height}px`;
+  const ctx = canvas.getContext('2d'); if (!ctx) return;
+  ctx.scale(ratio, ratio); ctx.globalAlpha = project.opacity;
+  let h: number[]; try { h = homography(project.controlPoints); } catch { return; }
+  const cols = 12, rows = Math.max(8, Math.round(cols * (project.imageHeight ?? img.naturalHeight) / (project.imageWidth ?? img.naturalWidth)));
+  const iw = project.imageWidth ?? img.naturalWidth, ih = project.imageHeight ?? img.naturalHeight;
+  const point = (x:number,y:number) => { const geo=imageToGeo({x,y},h); return map.latLngToContainerPoint([geo.lat,geo.lon]); };
+  for(let y=0;y<rows;y++)for(let x=0;x<cols;x++){
+    const sx=x*iw/cols,sy=y*ih/rows,sw=iw/cols,sh=ih/rows;
+    const p0=point(sx,sy),p1=point(sx+sw,sy),p2=point(sx,sy+sh),p3=point(sx+sw,sy+sh);
+    drawImageTriangle(ctx,img,[sx,sy],[sx+sw,sy],[sx,sy+sh],p0,p1,p2);
+    drawImageTriangle(ctx,img,[sx+sw,sy],[sx+sw,sy+sh],[sx,sy+sh],p1,p3,p2);
+  }
+}
+function drawImageTriangle(ctx:CanvasRenderingContext2D,img:HTMLImageElement,s0:number[],s1:number[],s2:number[],d0:L.Point,d1:L.Point,d2:L.Point){
+  const den=s0[0]*(s1[1]-s2[1])+s1[0]*(s2[1]-s0[1])+s2[0]*(s0[1]-s1[1]); if(Math.abs(den)<1e-6)return;
+  const a=(d0.x*(s1[1]-s2[1])+d1.x*(s2[1]-s0[1])+d2.x*(s0[1]-s1[1]))/den;
+  const c=(d0.x*(s2[0]-s1[0])+d1.x*(s0[0]-s2[0])+d2.x*(s1[0]-s0[0]))/den;
+  const e=(d0.x*(s1[0]*s2[1]-s2[0]*s1[1])+d1.x*(s2[0]*s0[1]-s0[0]*s2[1])+d2.x*(s0[0]*s1[1]-s1[0]*s0[1]))/den;
+  const b=(d0.y*(s1[1]-s2[1])+d1.y*(s2[1]-s0[1])+d2.y*(s0[1]-s1[1]))/den;
+  const d=(d0.y*(s2[0]-s1[0])+d1.y*(s0[0]-s2[0])+d2.y*(s1[0]-s0[0]))/den;
+  const f=(d0.y*(s1[0]*s2[1]-s2[0]*s1[1])+d1.y*(s2[0]*s0[1]-s0[0]*s2[1])+d2.y*(s0[0]*s1[1]-s1[0]*s0[1]))/den;
+  ctx.save();ctx.beginPath();ctx.moveTo(d0.x,d0.y);ctx.lineTo(d1.x,d1.y);ctx.lineTo(d2.x,d2.y);ctx.closePath();ctx.clip();ctx.transform(a,b,c,d,e,f);ctx.drawImage(img,0,0,img.naturalWidth,img.naturalHeight,0,0,project.imageWidth??img.naturalWidth,project.imageHeight??img.naturalHeight);ctx.restore();
 }
 
 function rotate(degrees: number) {
@@ -297,12 +376,11 @@ function drawPhotoMarkers() {
     const marker = document.createElement('button');
     marker.className = 'photo-checkpoint'; marker.textContent = point.number;
     marker.style.left = `calc(50% + ${t.x + x}px)`; marker.style.top = `calc(50% + ${t.y + y}px)`;
-    marker.setAttribute('aria-label', `PK ${point.number}. Dotknij, aby usunąć i ustawić ponownie`);
+    marker.classList.toggle('selected', editingCheckpointId === point.id);
+    marker.setAttribute('aria-label', `PK ${point.number}. Dotknij, aby poprawić pozycję`);
     marker.onpointerdown = event => event.stopPropagation();
     marker.onclick = () => {
-      if (!confirm(`Usunąć PK ${point.number} i ustawić go ponownie?`)) return;
-      project.checkpoints = project.checkpoints.filter(p => p.id !== point.id);
-      invalidateRoute(); refresh(); save();
+      editingCheckpointId = point.id; refresh();
     };
     layer.append(marker);
   }
@@ -404,17 +482,39 @@ function addCheckpoint(geo: LatLng, image?: ImagePoint) {
   project.checkpoints.push({ id: id(), number, geo, image, kind: 'checkpoint' });
   invalidateRoute(); refresh(); save();
 }
+function updateCheckpointPosition(geo: LatLng, image?: ImagePoint) {
+  const point = project.checkpoints.find(item => item.id === editingCheckpointId);
+  if (!point) { editingCheckpointId = undefined; return; }
+  point.geo = geo; point.image = image; editingCheckpointId = undefined;
+  invalidateRoute(); refresh(); save();
+}
+function imageForGeo(geo: LatLng) {
+  try { return geoToImage(geo, homography(project.controlPoints)); } catch { return undefined; }
+}
+function centerPhotoOnImage(point: ImagePoint) {
+  const img = el<HTMLImageElement>('#photo-image'), t = project.imageTransform;
+  const width = img.offsetWidth, height = img.offsetHeight;
+  if (!width || !height) return;
+  const localX = point.x / (project.imageWidth ?? img.naturalWidth) * width - width / 2;
+  const localY = point.y / (project.imageHeight ?? img.naturalHeight) * height - height / 2;
+  const angle = t.rotation * Math.PI / 180;
+  t.x = -(Math.cos(angle) * localX - Math.sin(angle) * localY) * t.scale;
+  t.y = -(Math.sin(angle) * localX + Math.cos(angle) * localY) * t.scale;
+  positionPhoto();
+}
 function renderPointControls() {
   const cps = project.checkpoints.filter(p => p.kind === 'checkpoint');
   el('#points-controls').innerHTML = `
     <div class="card"><h2>Punkty kontrolne</h2>
       <p class="muted">Widok: ${photoMode ? 'zdjęcie' : 'OSM'}. Ustaw miejsce pod celownikiem i użyj przycisku na mapie.</p>
-      <div class="button-row"><button id="points-view" class="secondary">${photoMode ? 'Pokaż OSM' : 'Pokaż zdjęcie'}</button></div>
+      <div class="button-row"><button id="points-view" class="secondary">${photoMode ? 'Pokaż OSM' : 'Pokaż zdjęcie'}</button>
+      <button id="points-calculate" class="primary" ${cps.length >= 2 ? '' : 'disabled'}>Oblicz trasę →</button></div>
       <div class="endpoint-options"><label>Początek trasy<select id="route-start"></select></label>
       <label>Koniec trasy<select id="route-end"></select></label></div>
       <div id="checkpoint-list"></div></div>`;
   el<HTMLButtonElement>('#points-view').disabled = !project.image;
   el<HTMLButtonElement>('#points-view').onclick = () => { if (project.image) { photoMode = !photoMode; refresh(); } };
+  el<HTMLButtonElement>('#points-calculate').onclick = () => { step = 'route'; editingCheckpointId = undefined; photoMode = false; refresh(); void calculate(); };
   for (const [selector, selected, key] of [['#route-start', project.startPointId ?? 'auto', 'startPointId'], ['#route-end', project.endPointId ?? 'auto', 'endPointId']] as const) {
     const select = el<HTMLSelectElement>(selector); select.add(new Option('Wybierz automatycznie', 'auto'));
     cps.forEach(point => select.add(new Option(point.number, point.id))); select.value = selected;
@@ -427,9 +527,15 @@ function renderPointControls() {
     const badge = document.createElement('span'); badge.className = 'badge'; badge.textContent = p.number;
     const input = document.createElement('input'); input.type = 'text'; input.value = p.number; input.setAttribute('aria-label', 'Numer PK');
     input.onchange = () => { p.number = input.value.trim() || p.number; invalidateRoute(); refresh(); save(); };
+    const editPhoto = document.createElement('button'); editPhoto.className = 'mini-button'; editPhoto.textContent = 'Zdjęcie'; editPhoto.disabled = !p.image;
+    editPhoto.setAttribute('aria-label', `Popraw PK ${p.number} na zdjęciu`);
+    editPhoto.onclick = () => { if (!p.image) return; editingCheckpointId = p.id; photoMode = true; refresh(); setTimeout(() => centerPhotoOnImage(p.image!), 0); };
+    const editMap = document.createElement('button'); editMap.className = 'mini-button'; editMap.textContent = 'OSM';
+    editMap.setAttribute('aria-label', `Popraw PK ${p.number} na OSM`);
+    editMap.onclick = () => { editingCheckpointId = p.id; photoMode = false; map.setView([p.geo.lat, p.geo.lon], Math.max(map.getZoom(), 16)); refresh(); };
     const del = document.createElement('button'); del.className = 'icon'; del.textContent = '×'; del.setAttribute('aria-label', 'Usuń PK');
-    del.onclick = () => { project.checkpoints = project.checkpoints.filter(q => q.id !== p.id);if(project.startPointId===p.id)project.startPointId=undefined;if(project.endPointId===p.id)project.endPointId=undefined;invalidateRoute();refresh();save(); };
-    row.append(badge, input, del); list.append(row);
+    del.onclick = () => { project.checkpoints = project.checkpoints.filter(q => q.id !== p.id);if(project.startPointId===p.id)project.startPointId=undefined;if(project.endPointId===p.id)project.endPointId=undefined;if(editingCheckpointId===p.id)editingCheckpointId=undefined;invalidateRoute();refresh();save(); };
+    row.append(badge, input, editPhoto, editMap, del); list.append(row);
   });
 }
 
@@ -475,11 +581,19 @@ function renderRouteControls() {
   const copy = document.createElement('button'); copy.className = 'secondary'; copy.textContent = 'Kopiuj listę PK';
   copy.onclick = async () => { await navigator.clipboard?.writeText(paperOrder.join(' → ')); copy.textContent = 'Skopiowano'; };
   box.append(copy);
+  const exportTitle = document.createElement('h3'); exportTitle.textContent = 'Otwórz pojedynczy punkt w Mapy.com'; box.append(exportTitle);
+  const pointExports = document.createElement('div'); pointExports.className = 'point-exports';
+  route.order.filter((point, index, array) => array.findIndex(other => other.id === point.id) === index).forEach(point => {
+    const open = document.createElement('button'); open.className = 'secondary'; open.textContent = point.number;
+    open.setAttribute('aria-label', `Otwórz punkt ${point.number} w Mapy.com`);
+    open.onclick = () => window.open(mapyPointUrl(point.geo), '_blank', 'noopener'); pointExports.append(open);
+  });
+  box.append(pointExports);
   if (route.warning) { const warning = document.createElement('p'); warning.className = 'warning'; warning.textContent = route.warning; box.append(warning); }
 }
 async function calculate() {
   const cps = project.checkpoints.filter(p => p.kind === 'checkpoint');
-  if (!cps.length) { alert('Dodaj przynajmniej jeden PK.'); return; }
+  if (cps.length < 2) { alert('Dodaj przynajmniej dwa punkty.'); return; }
   const button = el<HTMLButtonElement>('#calculate');
   button.disabled = true; button.textContent = 'Obliczanie…';
   try {
@@ -526,6 +640,14 @@ function drawMarkers() {
     const marker = L.marker([p.geo.lat, p.geo.lon], {
       icon: L.divIcon({ className: 'marker', html: `<b>${markerLabel(p)}</b>`, iconSize: [34, 34] })
     }).addTo(map);
+    marker.on('click', () => { if (step === 'points' && !photoMode) { editingCheckpointId = p.id; map.panTo([p.geo.lat, p.geo.lon]); refresh(); } });
+    markers.push(marker);
+  });
+  if (step === 'map' && calibration === 'review') project.controlPoints.forEach((point, index) => {
+    const marker = L.marker([point.geo.lat, point.geo.lon], {
+      icon: L.divIcon({ className: 'calibration-marker', html: `<b>${index + 1}</b>`, iconSize: [32, 32] })
+    }).addTo(map);
+    marker.on('click', () => { selectedControlIndex = index; editingControlIndex = index; calibration = 'photo'; refresh(); });
     markers.push(marker);
   });
   if (project.route?.geometry.length) {
